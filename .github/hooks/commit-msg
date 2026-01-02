@@ -1,0 +1,35 @@
+#!/bin/sh
+#
+# Conventional Commits validation hook
+# Install: cp .github/hooks/commit-msg .git/hooks/commit-msg && chmod +x .git/hooks/commit-msg
+#
+# Format: type(scope): summary
+# Types: feat, fix, docs, style, refactor, perf, test, chore
+# Breaking change: add ! before colon (e.g., feat!: breaking change)
+
+commit_msg_file=$1
+commit_msg=$(cat "$commit_msg_file")
+
+# Skip merge commits
+if echo "$commit_msg" | grep -qE "^Merge "; then
+    exit 0
+fi
+
+# Validate format
+if ! echo "$commit_msg" | grep -qE "^(feat|fix|docs|style|refactor|perf|test|chore)(\([a-zA-Z0-9._-]+\))?(!)?: .+$"; then
+    echo "ERROR: Commit message does not follow Conventional Commits format."
+    echo ""
+    echo "Expected format: type(scope): summary"
+    echo ""
+    echo "Types: feat, fix, docs, style, refactor, perf, test, chore"
+    echo "Scope: optional, alphanumeric with dots, underscores, hyphens"
+    echo "Breaking: add ! before colon for breaking changes"
+    echo ""
+    echo "Examples:"
+    echo "  feat: add search endpoint"
+    echo "  fix(auth): handle expired tokens"
+    echo "  feat!: change API response format"
+    echo ""
+    echo "Your message: $commit_msg"
+    exit 1
+fi
