@@ -1,0 +1,6 @@
+# Protect release-triggering files
+VERSION @gurusheydeo
+
+# Protect deployment configurations
+Dockerfile @gurusheydeo
+docker-compose*.yml @gurusheydeo

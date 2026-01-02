@@ -7,6 +7,7 @@
 *.dll
 *.so
 *.dylib
+/sercha-core
 
 # Test binary, built with `go test -c`
 *.test
@@ -26,7 +27,23 @@ go.work.sum
 
 # env file
 .env
+.env.*
+!.env.example
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Debug
+__debug_bin*
+
+# Local development
+tmp/
+dist/
