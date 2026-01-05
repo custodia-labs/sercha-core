@@ -35,10 +35,7 @@ services:
       start_period: 60s
 
   sercha-api:
-    image: sercha-core:latest
-    build:
-      context: ../..
-      dockerfile: Dockerfile
+    image: ghcr.io/custodia-labs/sercha-core:latest
     environment:
       RUN_MODE: api
       DATABASE_URL: postgres://sercha:sercha_dev@postgres:5432/sercha?sslmode=disable
@@ -56,10 +53,7 @@ services:
         condition: service_healthy
 
   sercha-worker:
-    image: sercha-core:latest
-    build:
-      context: ../..
-      dockerfile: Dockerfile
+    image: ghcr.io/custodia-labs/sercha-core:latest
     environment:
       RUN_MODE: worker
       DATABASE_URL: postgres://sercha:sercha_dev@postgres:5432/sercha?sslmode=disable

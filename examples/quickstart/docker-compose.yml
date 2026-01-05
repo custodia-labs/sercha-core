@@ -44,10 +44,7 @@ services:
       start_period: 60s
 
   sercha:
-    image: sercha-core:latest
-    build:
-      context: ../..
-      dockerfile: Dockerfile
+    image: ghcr.io/custodia-labs/sercha-core:latest
     environment:
       DATABASE_URL: postgres://sercha:sercha_dev@postgres:5432/sercha?sslmode=disable
       REDIS_URL: redis://redis:6379
