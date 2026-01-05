@@ -1,0 +1,81 @@
+# Multinode: Split API and Worker containers (PostgreSQL-only)
+# Usage: docker compose up -d
+#
+# Note: For production with multiple workers, use multinode-redis instead.
+# PostgreSQL advisory locks work but Redis provides better distributed locking.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sercha
+      POSTGRES_PASSWORD: sercha_dev
+      POSTGRES_DB: sercha
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sercha -d sercha"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  vespa:
+    image: vespaengine/vespa:8
+    ports:
+      - "19071:19071"
+    volumes:
+      - vespa_data:/opt/vespa/var
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:19071/state/v1/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 60s
+
+  sercha-api:
+    image: sercha-core:latest
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    environment:
+      RUN_MODE: api
+      DATABASE_URL: postgres://sercha:sercha_dev@postgres:5432/sercha?sslmode=disable
+      VESPA_URL: http://vespa:19071
+      JWT_SECRET: change-me-in-production
+      PORT: 8080
+      DB_MAX_OPEN_CONNS: 10
+      DB_MAX_IDLE_CONNS: 3
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      vespa:
+        condition: service_healthy
+
+  sercha-worker:
+    image: sercha-core:latest
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    environment:
+      RUN_MODE: worker
+      DATABASE_URL: postgres://sercha:sercha_dev@postgres:5432/sercha?sslmode=disable
+      VESPA_URL: http://vespa:19071
+      JWT_SECRET: change-me-in-production
+      WORKER_CONCURRENCY: 2
+      SCHEDULER_ENABLED: "true"
+      SCHEDULER_LOCK_REQUIRED: "true"
+      DB_MAX_OPEN_CONNS: 10
+      DB_MAX_IDLE_CONNS: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      vespa:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  vespa_data:

@@ -1,0 +1,1420 @@
+package services
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/custodia-labs/sercha-core/internal/core/domain"
+	"github.com/custodia-labs/sercha-core/internal/core/ports/driven"
+	"github.com/custodia-labs/sercha-core/internal/core/ports/driven/mocks"
+	"github.com/custodia-labs/sercha-core/internal/runtime"
+)
+
+// Test helper to create SyncOrchestrator with mocks
+func createTestSyncOrchestrator(t *testing.T) (
+	*SyncOrchestrator,
+	*mocks.MockSourceStore,
+	*mocks.MockDocumentStore,
+	*mocks.MockChunkStore,
+	*mocks.MockSyncStateStore,
+	*mocks.MockSearchEngine,
+	*mockConnectorFactory,
+) {
+	t.Helper()
+
+	sourceStore := mocks.NewMockSourceStore()
+	documentStore := mocks.NewMockDocumentStore()
+	chunkStore := mocks.NewMockChunkStore()
+	syncStore := mocks.NewMockSyncStateStore()
+	searchEngine := mocks.NewMockSearchEngine()
+	connectorFactory := newMockConnectorFactory()
+	normaliserRegistry := mocks.NewMockNormaliserRegistry()
+	pipeline := mocks.NewMockPostProcessorPipeline()
+
+	cfg := domain.NewRuntimeConfig("memory")
+	services := runtime.NewServices(cfg)
+
+	orchestrator := NewSyncOrchestrator(SyncOrchestratorConfig{
+		SourceStore:      sourceStore,
+		DocumentStore:    documentStore,
+		ChunkStore:       chunkStore,
+		SyncStore:        syncStore,
+		SearchEngine:     searchEngine,
+		ConnectorFactory: connectorFactory,
+		NormaliserReg:    normaliserRegistry,
+		Pipeline:         pipeline,
+		Services:         services,
+	})
+
+	return orchestrator, sourceStore, documentStore, chunkStore, syncStore, searchEngine, connectorFactory
+}
+
+// mockConnectorFactory wraps mocks.MockConnectorFactory to fix interface compatibility
+type mockConnectorFactory struct {
+	connector *mocks.MockConnector
+	createErr error
+}
+
+func newMockConnectorFactory() *mockConnectorFactory {
+	return &mockConnectorFactory{
+		connector: mocks.NewMockConnector(),
+	}
+}
+
+func (m *mockConnectorFactory) Register(builder driven.ConnectorBuilder) {}
+
+func (m *mockConnectorFactory) Create(ctx context.Context, source *domain.Source) (driven.Connector, error) {
+	if m.createErr != nil {
+		return nil, m.createErr
+	}
+	return m.connector, nil
+}
+
+func (m *mockConnectorFactory) SupportedTypes() []domain.ProviderType {
+	return []domain.ProviderType{domain.ProviderTypeConfluence}
+}
+
+func (m *mockConnectorFactory) GetBuilder(providerType domain.ProviderType) (driven.ConnectorBuilder, error) {
+	return nil, nil
+}
+
+func (m *mockConnectorFactory) SupportsOAuth(providerType domain.ProviderType) bool {
+	return false
+}
+
+func (m *mockConnectorFactory) GetOAuthConfig(providerType domain.ProviderType) *driven.OAuthConfig {
+	return nil
+}
+
+// TestNewSyncOrchestrator tests basic orchestrator creation
+func TestNewSyncOrchestrator(t *testing.T) {
+	orchestrator, _, _, _, _, _, _ := createTestSyncOrchestrator(t)
+	if orchestrator == nil {
+		t.Fatal("expected non-nil orchestrator")
+	}
+	if orchestrator.logger == nil {
+		t.Error("expected non-nil logger")
+	}
+}
+
+// TestNewSyncOrchestrator_NilLogger tests that a default logger is created when nil is provided
+func TestNewSyncOrchestrator_NilLogger(t *testing.T) {
+	sourceStore := mocks.NewMockSourceStore()
+	documentStore := mocks.NewMockDocumentStore()
+
+	orchestrator := NewSyncOrchestrator(SyncOrchestratorConfig{
+		SourceStore:   sourceStore,
+		DocumentStore: documentStore,
+		Logger:        nil, // Explicitly nil
+	})
+
+	if orchestrator == nil {
+		t.Fatal("expected non-nil orchestrator")
+	}
+	if orchestrator.logger == nil {
+		t.Fatal("expected non-nil logger even when not provided")
+	}
+}
+
+// TestSyncSource_SourceNotFound tests error when source doesn't exist
+func TestSyncSource_SourceNotFound(t *testing.T) {
+	orchestrator, _, _, _, syncStore, _, _ := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	result, err := orchestrator.SyncSource(ctx, "non-existent")
+	if err == nil {
+		t.Fatal("expected error for non-existent source")
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result even on error")
+	}
+	if result.Success {
+		t.Error("expected Success=false")
+	}
+	if result.Error == "" {
+		t.Error("expected error message in result")
+	}
+
+	// Verify sync state was updated to failed
+	state, _ := syncStore.Get(ctx, "non-existent")
+	if state != nil && state.Status != domain.SyncStatusFailed {
+		t.Error("expected sync state to be failed")
+	}
+}
+
+// TestSyncSource_DisabledSource tests that disabled sources fail sync
+func TestSyncSource_DisabledSource(t *testing.T) {
+	orchestrator, sourceStore, _, _, syncStore, _, _ := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	// Create disabled source
+	source := &domain.Source{
+		ID:      "source-1",
+		Name:    "Test Source",
+		Enabled: false,
+	}
+	_ = sourceStore.Save(ctx, source)
+
+	result, err := orchestrator.SyncSource(ctx, "source-1")
+	if err == nil {
+		t.Fatal("expected error for disabled source")
+	}
+	if result.Success {
+		t.Error("expected Success=false for disabled source")
+	}
+
+	// Verify sync state was updated to failed
+	state, _ := syncStore.Get(ctx, "source-1")
+	if state != nil && state.Status != domain.SyncStatusFailed {
+		t.Error("expected sync state to be failed")
+	}
+}
+
+// TestSyncSource_ConnectorCreateFails tests error when connector creation fails
+func TestSyncSource_ConnectorCreateFails(t *testing.T) {
+	orchestrator, sourceStore, _, _, _, _, connectorFactory := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	// Create enabled source
+	source := &domain.Source{
+		ID:      "source-1",
+		Name:    "Test Source",
+		Enabled: true,
+	}
+	_ = sourceStore.Save(ctx, source)
+
+	// Make connector creation fail
+	connectorFactory.createErr = errors.New("connector creation failed")
+
+	result, err := orchestrator.SyncSource(ctx, "source-1")
+	if err == nil {
+		t.Fatal("expected error when connector creation fails")
+	}
+	if result.Success {
+		t.Error("expected Success=false")
+	}
+	if !containsString(result.Error, "failed to create connector") {
+		t.Errorf("expected error to mention connector creation, got: %s", result.Error)
+	}
+}
+
+// TestSyncSource_TestConnectionFails tests error when connection test fails
+func TestSyncSource_TestConnectionFails(t *testing.T) {
+	orchestrator, sourceStore, _, _, _, _, connectorFactory := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	// Create enabled source
+	source := &domain.Source{
+		ID:      "source-1",
+		Name:    "Test Source",
+		Enabled: true,
+	}
+	_ = sourceStore.Save(ctx, source)
+
+	// Make test connection fail
+	connectorFactory.connector.TestConnectionFn = func(ctx context.Context, source *domain.Source) error {
+		return errors.New("connection test failed")
+	}
+
+	result, err := orchestrator.SyncSource(ctx, "source-1")
+	if err == nil {
+		t.Fatal("expected error when connection test fails")
+	}
+	if result.Success {
+		t.Error("expected Success=false")
+	}
+	if !containsString(result.Error, "connection test failed") {
+		t.Errorf("expected error to mention connection test, got: %s", result.Error)
+	}
+}
+
+// TestSyncSource_FetchChangesFails tests error when fetching changes fails
+func TestSyncSource_FetchChangesFails(t *testing.T) {
+	orchestrator, sourceStore, _, _, _, _, connectorFactory := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	// Create enabled source
+	source := &domain.Source{
+		ID:      "source-1",
+		Name:    "Test Source",
+		Enabled: true,
+	}
+	_ = sourceStore.Save(ctx, source)
+
+	// Make fetch changes fail
+	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
+		return nil, "", errors.New("fetch changes failed")
+	}
+
+	result, err := orchestrator.SyncSource(ctx, "source-1")
+	if err == nil {
+		t.Fatal("expected error when fetch changes fails")
+	}
+	if result.Success {
+		t.Error("expected Success=false")
+	}
+	if !containsString(result.Error, "failed to fetch changes") {
+		t.Errorf("expected error to mention fetch changes, got: %s", result.Error)
+	}
+}
+
+// TestSyncSource_ContextCancelled tests that context cancellation is handled
+func TestSyncSource_ContextCancelled(t *testing.T) {
+	orchestrator, sourceStore, _, _, _, _, connectorFactory := createTestSyncOrchestrator(t)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Create enabled source
+	source := &domain.Source{
+		ID:      "source-1",
+		Name:    "Test Source",
+		Enabled: true,
+	}
+	_ = sourceStore.Save(ctx, source)
+
+	// Cancel context before fetch returns
+	callCount := 0
+	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
+		callCount++
+		if callCount == 1 {
+			// Cancel context after first call
+			cancel()
+			// Return a change to trigger another loop iteration
+			return []*domain.Change{
+				{ExternalID: "doc-1", Type: domain.ChangeTypeAdded, Document: &domain.Document{ExternalID: "doc-1"}},
+			}, "cursor-1", nil
+		}
+		return nil, "", nil
+	}
+
+	result, err := orchestrator.SyncSource(ctx, "source-1")
+	if err == nil {
+		t.Fatal("expected error when context cancelled")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled error, got: %v", err)
+	}
+	if result.Success {
+		t.Error("expected Success=false")
+	}
+}
+
+// TestSyncSource_Success_AddDocument tests successful document addition
+func TestSyncSource_Success_AddDocument(t *testing.T) {
+	orchestrator, sourceStore, documentStore, chunkStore, syncStore, searchEngine, connectorFactory := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	// Create enabled source
+	source := &domain.Source{
+		ID:           "source-1",
+		Name:         "Test Source",
+		ProviderType: domain.ProviderTypeConfluence,
+		Enabled:      true,
+	}
+	_ = sourceStore.Save(ctx, source)
+
+	// Setup connector to return one document
+	doc := &domain.Document{
+		ID:         "doc-1",
+		ExternalID: "ext-1",
+		Title:      "Test Doc",
+		MimeType:   "text/plain",
+	}
+	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
+		if cursor == "" {
+			return []*domain.Change{
+				{
+					ExternalID: "ext-1",
+					Type:       domain.ChangeTypeAdded,
+					Document:   doc,
+					Content:    "Test content",
+				},
+			}, "", nil
+		}
+		return nil, "", nil
+	}
+
+	result, err := orchestrator.SyncSource(ctx, "source-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected Success=true")
+	}
+	if result.Stats.DocumentsAdded != 1 {
+		t.Errorf("expected 1 document added, got %d", result.Stats.DocumentsAdded)
+	}
+	if result.Stats.ChunksIndexed != 1 {
+		t.Errorf("expected 1 chunk indexed, got %d", result.Stats.ChunksIndexed)
+	}
+
+	// Verify document was saved
+	savedDoc, err := documentStore.GetByExternalID(ctx, "source-1", "ext-1")
+	if err != nil {
+		t.Fatalf("document not found: %v", err)
+	}
+	if savedDoc.Title != "Test Doc" {
+		t.Errorf("expected title 'Test Doc', got '%s'", savedDoc.Title)
+	}
+	if savedDoc.SourceID != "source-1" {
+		t.Errorf("expected source ID 'source-1', got '%s'", savedDoc.SourceID)
+	}
+
+	// Verify chunks were saved
+	chunks, _ := chunkStore.GetByDocument(ctx, savedDoc.ID)
+	if len(chunks) != 1 {
+		t.Errorf("expected 1 chunk, got %d", len(chunks))
+	}
+
+	// Verify chunks were indexed in search engine
+	if searchEngine.Count() != 1 {
+		t.Errorf("expected 1 chunk in search engine, got %d", searchEngine.Count())
+	}
+
+	// Verify sync state was updated
+	state, err := syncStore.Get(ctx, "source-1")
+	if err != nil {
+		t.Fatalf("sync state not found: %v", err)
+	}
+	if state.Status != domain.SyncStatusCompleted {
+		t.Errorf("expected status completed, got %s", state.Status)
+	}
+	if state.Stats.DocumentsAdded != 1 {
+		t.Errorf("expected 1 document added in state, got %d", state.Stats.DocumentsAdded)
+	}
+}
+
+// TestSyncSource_Success_UpdateDocument tests successful document update
+func TestSyncSource_Success_UpdateDocument(t *testing.T) {
+	orchestrator, sourceStore, documentStore, _, syncStore, _, connectorFactory := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	// Create enabled source
+	source := &domain.Source{
+		ID:           "source-1",
+		Name:         "Test Source",
+		ProviderType: domain.ProviderTypeConfluence,
+		Enabled:      true,
+	}
+	_ = sourceStore.Save(ctx, source)
+
+	// Pre-create existing document
+	existingDoc := &domain.Document{
+		ID:         "existing-doc-id",
+		SourceID:   "source-1",
+		ExternalID: "ext-1",
+		Title:      "Old Title",
+		CreatedAt:  time.Now().Add(-time.Hour),
+	}
+	_ = documentStore.Save(ctx, existingDoc)
+
+	// Setup connector to return modified document
+	updatedDoc := &domain.Document{
+		ExternalID: "ext-1",
+		Title:      "New Title",
+		MimeType:   "text/plain",
+	}
+	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
+		if cursor == "" {
+			return []*domain.Change{
+				{
+					ExternalID: "ext-1",
+					Type:       domain.ChangeTypeModified,
+					Document:   updatedDoc,
+					Content:    "Updated content",
+				},
+			}, "", nil
+		}
+		return nil, "", nil
+	}
+
+	result, err := orchestrator.SyncSource(ctx, "source-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected Success=true")
+	}
+	if result.Stats.DocumentsUpdated != 1 {
+		t.Errorf("expected 1 document updated, got %d", result.Stats.DocumentsUpdated)
+	}
+	if result.Stats.DocumentsAdded != 0 {
+		t.Errorf("expected 0 documents added, got %d", result.Stats.DocumentsAdded)
+	}
+
+	// Verify document was updated but ID preserved
+	savedDoc, _ := documentStore.GetByExternalID(ctx, "source-1", "ext-1")
+	if savedDoc.ID != "existing-doc-id" {
+		t.Error("expected original document ID to be preserved")
+	}
+	if savedDoc.Title != "New Title" {
+		t.Errorf("expected title 'New Title', got '%s'", savedDoc.Title)
+	}
+	if savedDoc.CreatedAt != existingDoc.CreatedAt {
+		t.Error("expected CreatedAt to be preserved")
+	}
+
+	// Verify sync state
+	state, _ := syncStore.Get(ctx, "source-1")
+	if state.Stats.DocumentsUpdated != 1 {
+		t.Errorf("expected 1 document updated in state, got %d", state.Stats.DocumentsUpdated)
+	}
+}
+
+// TestSyncSource_Success_DeleteDocument tests successful document deletion
+func TestSyncSource_Success_DeleteDocument(t *testing.T) {
+	orchestrator, sourceStore, documentStore, _, syncStore, searchEngine, connectorFactory := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	// Create enabled source
+	source := &domain.Source{
+		ID:           "source-1",
+		Name:         "Test Source",
+		ProviderType: domain.ProviderTypeConfluence,
+		Enabled:      true,
+	}
+	_ = sourceStore.Save(ctx, source)
+
+	// Pre-create existing document
+	existingDoc := &domain.Document{
+		ID:         "doc-to-delete",
+		SourceID:   "source-1",
+		ExternalID: "ext-1",
+		Title:      "To Delete",
+	}
+	_ = documentStore.Save(ctx, existingDoc)
+
+	// Add a chunk to search engine
+	_ = searchEngine.Index(ctx, []*domain.Chunk{
+		{ID: "chunk-1", DocumentID: "doc-to-delete", Content: "content"},
+	})
+
+	// Setup connector to return delete change
+	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
+		if cursor == "" {
+			return []*domain.Change{
+				{
+					ExternalID: "ext-1",
+					Type:       domain.ChangeTypeDeleted,
+				},
+			}, "", nil
+		}
+		return nil, "", nil
+	}
+
+	result, err := orchestrator.SyncSource(ctx, "source-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected Success=true")
+	}
+	if result.Stats.DocumentsDeleted != 1 {
+		t.Errorf("expected 1 document deleted, got %d", result.Stats.DocumentsDeleted)
+	}
+
+	// Verify document was deleted
+	_, err = documentStore.Get(ctx, "doc-to-delete")
+	if err != domain.ErrNotFound {
+		t.Error("expected document to be deleted")
+	}
+
+	// Verify search engine was updated
+	if searchEngine.Count() != 0 {
+		t.Error("expected chunks to be deleted from search engine")
+	}
+
+	// Verify sync state
+	state, _ := syncStore.Get(ctx, "source-1")
+	if state.Stats.DocumentsDeleted != 1 {
+		t.Errorf("expected 1 document deleted in state, got %d", state.Stats.DocumentsDeleted)
+	}
+}
+
+// TestSyncSource_DeleteNonExistentDocument tests that deleting non-existent documents doesn't error
+func TestSyncSource_DeleteNonExistentDocument(t *testing.T) {
+	orchestrator, sourceStore, _, _, _, _, connectorFactory := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	// Create enabled source
+	source := &domain.Source{
+		ID:      "source-1",
+		Enabled: true,
+	}
+	_ = sourceStore.Save(ctx, source)
+
+	// Setup connector to delete non-existent document
+	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
+		if cursor == "" {
+			return []*domain.Change{
+				{
+					ExternalID: "non-existent",
+					Type:       domain.ChangeTypeDeleted,
+				},
+			}, "", nil
+		}
+		return nil, "", nil
+	}
+
+	result, err := orchestrator.SyncSource(ctx, "source-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected Success=true even when deleting non-existent document")
+	}
+	// Stats should not increment for non-existent documents
+	if result.Stats.DocumentsDeleted != 0 {
+		t.Errorf("expected 0 documents deleted, got %d", result.Stats.DocumentsDeleted)
+	}
+}
+
+// TestSyncSource_Pagination tests handling of paginated results
+func TestSyncSource_Pagination(t *testing.T) {
+	orchestrator, sourceStore, documentStore, _, _, _, connectorFactory := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	// Create enabled source
+	source := &domain.Source{
+		ID:           "source-1",
+		Name:         "Test Source",
+		ProviderType: domain.ProviderTypeConfluence,
+		Enabled:      true,
+	}
+	_ = sourceStore.Save(ctx, source)
+
+	// Setup connector to return documents across multiple pages
+	pageNum := 0
+	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
+		pageNum++
+		if pageNum == 1 {
+			return []*domain.Change{
+				{ExternalID: "ext-1", Type: domain.ChangeTypeAdded, Document: &domain.Document{ExternalID: "ext-1", Title: "Doc 1"}, Content: "Content 1"},
+			}, "page2", nil
+		}
+		if pageNum == 2 && cursor == "page2" {
+			return []*domain.Change{
+				{ExternalID: "ext-2", Type: domain.ChangeTypeAdded, Document: &domain.Document{ExternalID: "ext-2", Title: "Doc 2"}, Content: "Content 2"},
+			}, "page3", nil
+		}
+		if pageNum == 3 && cursor == "page3" {
+			return []*domain.Change{
+				{ExternalID: "ext-3", Type: domain.ChangeTypeAdded, Document: &domain.Document{ExternalID: "ext-3", Title: "Doc 3"}, Content: "Content 3"},
+			}, "", nil // Last page
+		}
+		return nil, "", nil
+	}
+
+	result, err := orchestrator.SyncSource(ctx, "source-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Stats.DocumentsAdded != 3 {
+		t.Errorf("expected 3 documents added, got %d", result.Stats.DocumentsAdded)
+	}
+
+	count, _ := documentStore.CountBySource(ctx, "source-1")
+	if count != 3 {
+		t.Errorf("expected 3 documents in store, got %d", count)
+	}
+}
+
+// TestSyncSource_PaginationStopsOnEmptyResults tests that pagination stops on empty results
+func TestSyncSource_PaginationStopsOnEmptyResults(t *testing.T) {
+	orchestrator, sourceStore, documentStore, _, _, _, connectorFactory := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	source := &domain.Source{
+		ID:      "source-1",
+		Enabled: true,
+	}
+	_ = sourceStore.Save(ctx, source)
+
+	callCount := 0
+	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
+		callCount++
+		if callCount == 1 {
+			return []*domain.Change{
+				{ExternalID: "ext-1", Type: domain.ChangeTypeAdded, Document: &domain.Document{ExternalID: "ext-1"}},
+			}, "cursor-1", nil
+		}
+		// Return empty results - should stop pagination
+		return []*domain.Change{}, "cursor-2", nil
+	}
+
+	_, err := orchestrator.SyncSource(ctx, "source-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if callCount != 2 {
+		t.Errorf("expected 2 calls to FetchChanges, got %d", callCount)
+	}
+
+	count, _ := documentStore.CountBySource(ctx, "source-1")
+	if count != 1 {
+		t.Errorf("expected 1 document, got %d", count)
+	}
+}
+
+// TestSyncSource_PaginationStopsOnSameCursor tests that pagination stops when cursor doesn't advance
+func TestSyncSource_PaginationStopsOnSameCursor(t *testing.T) {
+	orchestrator, sourceStore, _, _, _, _, connectorFactory := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	source := &domain.Source{
+		ID:      "source-1",
+		Enabled: true,
+	}
+	_ = sourceStore.Save(ctx, source)
+
+	callCount := 0
+	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
+		callCount++
+		// Return same cursor - should stop to prevent infinite loop
+		return []*domain.Change{
+			{ExternalID: "ext-1", Type: domain.ChangeTypeAdded, Document: &domain.Document{ExternalID: "ext-1"}},
+		}, cursor, nil
+	}
+
+	result, err := orchestrator.SyncSource(ctx, "source-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if callCount != 1 {
+		t.Errorf("expected 1 call to FetchChanges (stopped due to same cursor), got %d", callCount)
+	}
+
+	if result.Stats.DocumentsAdded != 1 {
+		t.Errorf("expected 1 document added, got %d", result.Stats.DocumentsAdded)
+	}
+}
+
+// TestSyncSource_ProcessChangeError_Continues tests that sync continues after processing errors
+func TestSyncSource_ProcessChangeError_Continues(t *testing.T) {
+	orchestrator, sourceStore, documentStore, _, _, _, connectorFactory := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	// Create enabled source
+	source := &domain.Source{
+		ID:           "source-1",
+		Name:         "Test Source",
+		ProviderType: domain.ProviderTypeConfluence,
+		Enabled:      true,
+	}
+	_ = sourceStore.Save(ctx, source)
+
+	// First document has nil Document (will error), second is valid
+	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
+		return []*domain.Change{
+			{ExternalID: "ext-1", Type: domain.ChangeTypeAdded, Document: nil, Content: "Content"},                                                     // Will fail
+			{ExternalID: "ext-2", Type: domain.ChangeTypeAdded, Document: &domain.Document{ExternalID: "ext-2", Title: "Valid"}, Content: "Content 2"}, // Should succeed
+		}, "", nil
+	}
+
+	result, err := orchestrator.SyncSource(ctx, "source-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Stats.Errors != 1 {
+		t.Errorf("expected 1 error, got %d", result.Stats.Errors)
+	}
+	if result.Stats.DocumentsAdded != 1 {
+		t.Errorf("expected 1 document added, got %d", result.Stats.DocumentsAdded)
+	}
+
+	count, _ := documentStore.CountBySource(ctx, "source-1")
+	if count != 1 {
+		t.Errorf("expected 1 document in store (only the valid one), got %d", count)
+	}
+}
+
+// TestSyncSource_UnknownChangeType tests error handling for unknown change types
+func TestSyncSource_UnknownChangeType(t *testing.T) {
+	orchestrator, sourceStore, _, _, _, _, connectorFactory := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	// Create enabled source
+	source := &domain.Source{
+		ID:           "source-1",
+		Name:         "Test Source",
+		ProviderType: domain.ProviderTypeConfluence,
+		Enabled:      true,
+	}
+	_ = sourceStore.Save(ctx, source)
+
+	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
+		return []*domain.Change{
+			{ExternalID: "ext-1", Type: "unknown_type", Document: &domain.Document{ExternalID: "ext-1"}},
+		}, "", nil
+	}
+
+	result, err := orchestrator.SyncSource(ctx, "source-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Stats.Errors != 1 {
+		t.Errorf("expected 1 error for unknown change type, got %d", result.Stats.Errors)
+	}
+}
+
+// TestSyncSource_MultipleChunks tests that multiple chunks are created and indexed
+func TestSyncSource_MultipleChunks(t *testing.T) {
+	orchestrator, sourceStore, _, chunkStore, _, searchEngine, connectorFactory := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	source := &domain.Source{
+		ID:      "source-1",
+		Enabled: true,
+	}
+	_ = sourceStore.Save(ctx, source)
+
+	// Mock pipeline to return multiple chunks
+	pipeline := orchestrator.pipeline.(*mocks.MockPostProcessorPipeline)
+	pipeline.ProcessFn = func(content string) []driven.Chunk {
+		return []driven.Chunk{
+			{Content: "Chunk 1", Position: 0, StartOffset: 0, EndOffset: 7},
+			{Content: "Chunk 2", Position: 1, StartOffset: 8, EndOffset: 15},
+			{Content: "Chunk 3", Position: 2, StartOffset: 16, EndOffset: 23},
+		}
+	}
+
+	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
+		if cursor == "" {
+			return []*domain.Change{
+				{ExternalID: "ext-1", Type: domain.ChangeTypeAdded, Document: &domain.Document{ExternalID: "ext-1"}, Content: "Test content for chunking"},
+			}, "", nil
+		}
+		return nil, "", nil
+	}
+
+	result, err := orchestrator.SyncSource(ctx, "source-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Stats.ChunksIndexed != 3 {
+		t.Errorf("expected 3 chunks indexed, got %d", result.Stats.ChunksIndexed)
+	}
+
+	// Verify chunks were saved
+	if chunkStore.Count() != 3 {
+		t.Errorf("expected 3 chunks in store, got %d", chunkStore.Count())
+	}
+
+	// Verify chunks were indexed
+	if searchEngine.Count() != 3 {
+		t.Errorf("expected 3 chunks in search engine, got %d", searchEngine.Count())
+	}
+}
+
+// TestSyncSource_NormaliserApplied tests that content normalisation is applied
+func TestSyncSource_NormaliserApplied(t *testing.T) {
+	orchestrator, sourceStore, _, _, _, _, connectorFactory := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	source := &domain.Source{
+		ID:      "source-1",
+		Enabled: true,
+	}
+	_ = sourceStore.Save(ctx, source)
+
+	// Mock normaliser to uppercase content
+	normaliser := mocks.NewMockNormaliser()
+	normaliser.NormaliseFn = func(content string, mimeType string) string {
+		return "NORMALIZED: " + content
+	}
+	// We can't type assert because normaliserReg is private interface,
+	// so we need to work with the existing mock
+	normaliserRegistry := mocks.NewMockNormaliserRegistry()
+	normaliserRegistry.SetNormaliser(normaliser)
+	orchestrator.normaliserReg = normaliserRegistry
+
+	var processedContent string
+	pipeline := orchestrator.pipeline.(*mocks.MockPostProcessorPipeline)
+	pipeline.ProcessFn = func(content string) []driven.Chunk {
+		processedContent = content
+		return []driven.Chunk{{Content: content, Position: 0}}
+	}
+
+	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
+		if cursor == "" {
+			return []*domain.Change{
+				{
+					ExternalID: "ext-1",
+					Type:       domain.ChangeTypeAdded,
+					Document:   &domain.Document{ExternalID: "ext-1", MimeType: "text/plain"},
+					Content:    "original content",
+				},
+			}, "", nil
+		}
+		return nil, "", nil
+	}
+
+	_, err := orchestrator.SyncSource(ctx, "source-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if processedContent != "NORMALIZED: original content" {
+		t.Errorf("expected normalised content, got: %s", processedContent)
+	}
+}
+
+// TestSyncSource_NilSearchEngine tests that sync works without search engine
+func TestSyncSource_NilSearchEngine(t *testing.T) {
+	sourceStore := mocks.NewMockSourceStore()
+	documentStore := mocks.NewMockDocumentStore()
+	chunkStore := mocks.NewMockChunkStore()
+	syncStore := mocks.NewMockSyncStateStore()
+	connectorFactory := newMockConnectorFactory()
+	normaliserRegistry := mocks.NewMockNormaliserRegistry()
+	pipeline := mocks.NewMockPostProcessorPipeline()
+
+	// Create orchestrator without search engine
+	orchestrator := NewSyncOrchestrator(SyncOrchestratorConfig{
+		SourceStore:      sourceStore,
+		DocumentStore:    documentStore,
+		ChunkStore:       chunkStore,
+		SyncStore:        syncStore,
+		SearchEngine:     nil, // No search engine
+		ConnectorFactory: connectorFactory,
+		NormaliserReg:    normaliserRegistry,
+		Pipeline:         pipeline,
+	})
+
+	ctx := context.Background()
+	_ = sourceStore.Save(ctx, &domain.Source{ID: "source-1", Enabled: true})
+
+	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
+		return []*domain.Change{
+			{ExternalID: "ext-1", Type: domain.ChangeTypeAdded, Document: &domain.Document{ExternalID: "ext-1"}, Content: "Content"},
+		}, "", nil
+	}
+
+	// Should not panic without search engine
+	result, err := orchestrator.SyncSource(ctx, "source-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected success even without search engine")
+	}
+}
+
+// TestSyncSource_NilChunkStore tests that sync works without chunk store
+func TestSyncSource_NilChunkStore(t *testing.T) {
+	sourceStore := mocks.NewMockSourceStore()
+	documentStore := mocks.NewMockDocumentStore()
+	syncStore := mocks.NewMockSyncStateStore()
+	connectorFactory := newMockConnectorFactory()
+	normaliserRegistry := mocks.NewMockNormaliserRegistry()
+	pipeline := mocks.NewMockPostProcessorPipeline()
+
+	// Create orchestrator without chunk store
+	orchestrator := NewSyncOrchestrator(SyncOrchestratorConfig{
+		SourceStore:      sourceStore,
+		DocumentStore:    documentStore,
+		ChunkStore:       nil, // No chunk store
+		SyncStore:        syncStore,
+		ConnectorFactory: connectorFactory,
+		NormaliserReg:    normaliserRegistry,
+		Pipeline:         pipeline,
+	})
+
+	ctx := context.Background()
+	_ = sourceStore.Save(ctx, &domain.Source{ID: "source-1", Enabled: true})
+
+	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
+		return []*domain.Change{
+			{ExternalID: "ext-1", Type: domain.ChangeTypeAdded, Document: &domain.Document{ExternalID: "ext-1"}, Content: "Content"},
+		}, "", nil
+	}
+
+	// Should not panic without chunk store
+	result, err := orchestrator.SyncSource(ctx, "source-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected success even without chunk store")
+	}
+}
+
+// TestSyncSource_CursorPersisted tests that cursor is persisted after successful sync
+func TestSyncSource_CursorPersisted(t *testing.T) {
+	orchestrator, sourceStore, _, _, syncStore, _, connectorFactory := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	source := &domain.Source{
+		ID:      "source-1",
+		Enabled: true,
+	}
+	_ = sourceStore.Save(ctx, source)
+
+	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
+		if cursor == "" {
+			return []*domain.Change{
+				{ExternalID: "ext-1", Type: domain.ChangeTypeAdded, Document: &domain.Document{ExternalID: "ext-1"}},
+			}, "final-cursor", nil
+		}
+		return nil, "", nil
+	}
+
+	result, err := orchestrator.SyncSource(ctx, "source-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Cursor != "final-cursor" {
+		t.Errorf("expected cursor 'final-cursor', got '%s'", result.Cursor)
+	}
+
+	// Verify cursor was saved in sync state
+	state, _ := syncStore.Get(ctx, "source-1")
+	if state.Cursor != "final-cursor" {
+		t.Errorf("expected cursor 'final-cursor' in state, got '%s'", state.Cursor)
+	}
+}
+
+// TestSyncSource_SyncStateProgression tests sync state transitions
+func TestSyncSource_SyncStateProgression(t *testing.T) {
+	orchestrator, sourceStore, _, _, syncStore, _, connectorFactory := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	source := &domain.Source{
+		ID:      "source-1",
+		Enabled: true,
+	}
+	_ = sourceStore.Save(ctx, source)
+
+	// Pre-create sync state
+	_ = syncStore.Save(ctx, &domain.SyncState{
+		SourceID: "source-1",
+		Status:   domain.SyncStatusIdle,
+	})
+
+	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
+		// Verify state was set to running
+		state, _ := syncStore.Get(ctx, "source-1")
+		if state.Status != domain.SyncStatusRunning {
+			t.Errorf("expected status running during sync, got %s", state.Status)
+		}
+		return []*domain.Change{}, "", nil
+	}
+
+	_, err := orchestrator.SyncSource(ctx, "source-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify final state is completed
+	state, _ := syncStore.Get(ctx, "source-1")
+	if state.Status != domain.SyncStatusCompleted {
+		t.Errorf("expected status completed after sync, got %s", state.Status)
+	}
+	if state.StartedAt == nil {
+		t.Error("expected StartedAt to be set")
+	}
+	if state.CompletedAt == nil {
+		t.Error("expected CompletedAt to be set")
+	}
+	if state.LastSyncAt == nil {
+		t.Error("expected LastSyncAt to be set")
+	}
+}
+
+// TestSyncAll_NoSources tests SyncAll with no sources
+func TestSyncAll_NoSources(t *testing.T) {
+	orchestrator, _, _, _, _, _, _ := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	results, err := orchestrator.SyncAll(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(results))
+	}
+}
+
+// TestSyncAll_SkipsDisabledSources tests that disabled sources are skipped
+func TestSyncAll_SkipsDisabledSources(t *testing.T) {
+	orchestrator, sourceStore, _, _, _, _, _ := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	// Create disabled source
+	_ = sourceStore.Save(ctx, &domain.Source{ID: "source-1", Name: "Disabled", Enabled: false})
+	_ = sourceStore.Save(ctx, &domain.Source{ID: "source-2", Name: "Disabled 2", Enabled: false})
+
+	results, err := orchestrator.SyncAll(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results (disabled sources skipped), got %d", len(results))
+	}
+}
+
+// TestSyncAll_MultipleSources tests syncing multiple enabled sources
+func TestSyncAll_MultipleSources(t *testing.T) {
+	orchestrator, sourceStore, _, _, _, _, connectorFactory := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	// Create two enabled sources
+	_ = sourceStore.Save(ctx, &domain.Source{ID: "source-1", Name: "Source 1", Enabled: true})
+	_ = sourceStore.Save(ctx, &domain.Source{ID: "source-2", Name: "Source 2", Enabled: true})
+
+	// Setup connector to return different docs per source
+	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
+		return []*domain.Change{
+			{ExternalID: source.ID + "-doc", Type: domain.ChangeTypeAdded, Document: &domain.Document{ExternalID: source.ID + "-doc"}, Content: "Content"},
+		}, "", nil
+	}
+
+	results, err := orchestrator.SyncAll(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("expected 2 results, got %d", len(results))
+	}
+
+	// All should be successful
+	for _, r := range results {
+		if !r.Success {
+			t.Errorf("expected all syncs to succeed, but %s failed: %s", r.SourceID, r.Error)
+		}
+	}
+}
+
+// TestSyncAll_MixedEnabledDisabled tests that only enabled sources are synced
+func TestSyncAll_MixedEnabledDisabled(t *testing.T) {
+	orchestrator, sourceStore, _, _, _, _, connectorFactory := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	_ = sourceStore.Save(ctx, &domain.Source{ID: "source-1", Enabled: true})
+	_ = sourceStore.Save(ctx, &domain.Source{ID: "source-2", Enabled: false})
+	_ = sourceStore.Save(ctx, &domain.Source{ID: "source-3", Enabled: true})
+
+	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
+		return []*domain.Change{}, "", nil
+	}
+
+	results, err := orchestrator.SyncAll(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("expected 2 results (only enabled sources), got %d", len(results))
+	}
+}
+
+// TestSyncAll_ListSourcesError tests error when listing sources fails
+func TestSyncAll_ListSourcesError(t *testing.T) {
+	orchestrator, sourceStore, _, _, _, _, _ := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	// Create a custom mock that returns an error on List
+	mockStore := &mockSourceStoreWithError{
+		MockSourceStore: sourceStore,
+		listErr:         errors.New("list failed"),
+	}
+	orchestrator.sourceStore = mockStore
+
+	_, err := orchestrator.SyncAll(ctx)
+	if err == nil {
+		t.Fatal("expected error when list sources fails")
+	}
+	if !containsString(err.Error(), "failed to list sources") {
+		t.Errorf("expected error to mention list sources, got: %v", err)
+	}
+}
+
+// mockSourceStoreWithError wraps MockSourceStore to inject errors
+type mockSourceStoreWithError struct {
+	*mocks.MockSourceStore
+	listErr error
+}
+
+func (m *mockSourceStoreWithError) List(ctx context.Context) ([]*domain.Source, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	return m.MockSourceStore.List(ctx)
+}
+
+// TestSyncAll_PartialFailure tests that SyncAll continues after individual source failures
+func TestSyncAll_PartialFailure(t *testing.T) {
+	orchestrator, sourceStore, _, _, _, _, connectorFactory := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	// Create two sources
+	_ = sourceStore.Save(ctx, &domain.Source{ID: "source-1", Enabled: true})
+	_ = sourceStore.Save(ctx, &domain.Source{ID: "source-2", Enabled: true})
+
+	// First source succeeds, second fails
+	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
+		if source.ID == "source-2" {
+			return nil, "", errors.New("fetch failed")
+		}
+		return []*domain.Change{
+			{ExternalID: "doc", Type: domain.ChangeTypeAdded, Document: &domain.Document{ExternalID: "doc"}, Content: "Content"},
+		}, "", nil
+	}
+
+	results, err := orchestrator.SyncAll(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("expected 2 results, got %d", len(results))
+	}
+
+	// Count successes and failures
+	var successes, failures int
+	for _, r := range results {
+		if r.Success {
+			successes++
+		} else {
+			failures++
+		}
+	}
+	if successes != 1 || failures != 1 {
+		t.Errorf("expected 1 success and 1 failure, got %d successes and %d failures", successes, failures)
+	}
+
+	// Verify failed result has error message
+	for _, r := range results {
+		if !r.Success && r.Error == "" {
+			t.Error("expected error message in failed result")
+		}
+	}
+}
+
+// TestProcessChange_NilDocument tests processAddOrUpdate with nil document
+func TestProcessChange_NilDocument(t *testing.T) {
+	orchestrator, sourceStore, _, _, _, _, _ := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	source := &domain.Source{ID: "source-1"}
+	_ = sourceStore.Save(ctx, source)
+
+	change := &domain.Change{
+		Type:       domain.ChangeTypeAdded,
+		ExternalID: "ext-1",
+		Document:   nil, // Nil document
+		Content:    "Content",
+	}
+
+	stats := &domain.SyncStats{}
+	err := orchestrator.processChange(ctx, source, change, stats)
+	if err == nil {
+		t.Fatal("expected error for nil document")
+	}
+	if !containsString(err.Error(), "document is nil") {
+		t.Errorf("expected error to mention nil document, got: %v", err)
+	}
+
+	// Stats should not increment
+	if stats.DocumentsAdded != 0 {
+		t.Error("expected stats to not increment on error")
+	}
+}
+
+// TestProcessAddOrUpdate_DocumentFieldsSet tests that document fields are properly set
+func TestProcessAddOrUpdate_DocumentFieldsSet(t *testing.T) {
+	orchestrator, sourceStore, documentStore, _, _, _, _ := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	source := &domain.Source{ID: "source-1"}
+	_ = sourceStore.Save(ctx, source)
+
+	change := &domain.Change{
+		Type:       domain.ChangeTypeAdded,
+		ExternalID: "ext-1",
+		Document: &domain.Document{
+			Title: "Test",
+		},
+		Content: "Content",
+	}
+
+	stats := &domain.SyncStats{}
+	err := orchestrator.processAddOrUpdate(ctx, source, change, stats)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify document fields were set
+	doc, _ := documentStore.GetByExternalID(ctx, "source-1", "ext-1")
+	if doc.SourceID != "source-1" {
+		t.Error("expected SourceID to be set")
+	}
+	if doc.ExternalID != "ext-1" {
+		t.Error("expected ExternalID to be set")
+	}
+	if doc.ID == "" {
+		t.Error("expected ID to be generated")
+	}
+	if doc.CreatedAt.IsZero() {
+		t.Error("expected CreatedAt to be set")
+	}
+	if doc.UpdatedAt.IsZero() {
+		t.Error("expected UpdatedAt to be set")
+	}
+	if doc.IndexedAt.IsZero() {
+		t.Error("expected IndexedAt to be set")
+	}
+}
+
+// TestFailSync tests that failSync properly updates sync state
+func TestFailSync(t *testing.T) {
+	orchestrator, _, _, _, syncStore, _, _ := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	// Pre-create sync state
+	_ = syncStore.Save(ctx, &domain.SyncState{
+		SourceID: "source-1",
+		Status:   domain.SyncStatusRunning,
+	})
+
+	testErr := errors.New("sync failed")
+	startTime := time.Now().Add(-5 * time.Second)
+
+	result, err := orchestrator.failSync(ctx, "source-1", startTime, testErr)
+
+	if err != testErr {
+		t.Errorf("expected error to be returned, got: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Success {
+		t.Error("expected Success=false")
+	}
+	if result.Error != "sync failed" {
+		t.Errorf("expected error message, got: %s", result.Error)
+	}
+	if result.Duration <= 0 {
+		t.Error("expected positive duration")
+	}
+
+	// Verify sync state was updated
+	state, _ := syncStore.Get(ctx, "source-1")
+	if state.Status != domain.SyncStatusFailed {
+		t.Errorf("expected status failed, got %s", state.Status)
+	}
+	if state.Error != "sync failed" {
+		t.Errorf("expected error message in state, got: %s", state.Error)
+	}
+	if state.CompletedAt == nil {
+		t.Error("expected CompletedAt to be set")
+	}
+}
+
+// TestFailSync_NoExistingSyncState tests failSync when no sync state exists
+func TestFailSync_NoExistingSyncState(t *testing.T) {
+	orchestrator, _, _, _, _, _, _ := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	testErr := errors.New("sync failed")
+	startTime := time.Now()
+
+	result, err := orchestrator.failSync(ctx, "source-1", startTime, testErr)
+
+	// Should still return result even if sync state doesn't exist
+	if err != testErr {
+		t.Errorf("expected error to be returned")
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Success {
+		t.Error("expected Success=false")
+	}
+}
+
+// TestSyncSource_SearchEngineDeleteError tests that deletion continues even if search engine fails
+func TestSyncSource_SearchEngineDeleteError(t *testing.T) {
+	orchestrator, sourceStore, documentStore, _, _, _, connectorFactory := createTestSyncOrchestrator(t)
+	ctx := context.Background()
+
+	source := &domain.Source{
+		ID:      "source-1",
+		Enabled: true,
+	}
+	_ = sourceStore.Save(ctx, source)
+
+	// Pre-create document
+	existingDoc := &domain.Document{
+		ID:         "doc-1",
+		SourceID:   "source-1",
+		ExternalID: "ext-1",
+	}
+	_ = documentStore.Save(ctx, existingDoc)
+
+	// Mock search engine that errors on delete
+	searchEngine := &mockSearchEngineWithError{
+		MockSearchEngine: orchestrator.searchEngine.(*mocks.MockSearchEngine),
+		deleteErr:        errors.New("search engine delete failed"),
+	}
+	orchestrator.searchEngine = searchEngine
+
+	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
+		if cursor == "" {
+			return []*domain.Change{
+				{ExternalID: "ext-1", Type: domain.ChangeTypeDeleted},
+			}, "", nil
+		}
+		return nil, "", nil
+	}
+
+	result, err := orchestrator.SyncSource(ctx, "source-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should still succeed and delete from document store
+	if !result.Success {
+		t.Error("expected success even with search engine error")
+	}
+	if result.Stats.DocumentsDeleted != 1 {
+		t.Errorf("expected 1 document deleted, got %d", result.Stats.DocumentsDeleted)
+	}
+
+	// Document should be deleted from document store
+	_, err = documentStore.Get(ctx, "doc-1")
+	if err != domain.ErrNotFound {
+		t.Error("expected document to be deleted from document store")
+	}
+}
+
+// mockSearchEngineWithError wraps MockSearchEngine to inject errors
+type mockSearchEngineWithError struct {
+	*mocks.MockSearchEngine
+	deleteErr error
+}
+
+func (m *mockSearchEngineWithError) DeleteByDocument(ctx context.Context, documentID string) error {
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
+	return m.MockSearchEngine.DeleteByDocument(ctx, documentID)
+}
+
+// Helper function to check if a string contains a substring
+func containsString(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		(len(s) > 0 && len(substr) > 0 && searchString(s, substr)))
+}
+
+func searchString(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}

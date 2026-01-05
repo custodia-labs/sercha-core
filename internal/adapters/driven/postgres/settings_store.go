@@ -1,0 +1,196 @@
+package postgres
+
+import (
+	"context"
+	"database/sql"
+	"time"
+
+	"github.com/custodia-labs/sercha-core/internal/core/domain"
+	"github.com/custodia-labs/sercha-core/internal/core/ports/driven"
+)
+
+// Verify interface compliance
+var _ driven.SettingsStore = (*SettingsStore)(nil)
+
+// SettingsStore implements driven.SettingsStore using PostgreSQL
+type SettingsStore struct {
+	db *DB
+}
+
+// NewSettingsStore creates a new SettingsStore
+func NewSettingsStore(db *DB) *SettingsStore {
+	return &SettingsStore{db: db}
+}
+
+// GetSettings retrieves settings for a team
+func (s *SettingsStore) GetSettings(ctx context.Context, teamID string) (*domain.Settings, error) {
+	query := `
+		SELECT team_id, ai_provider, embedding_model, ai_endpoint, default_search_mode,
+			   results_per_page, max_results_per_page, sync_interval_minutes, sync_enabled,
+			   semantic_search_enabled, auto_suggest_enabled, updated_at, updated_by
+		FROM settings
+		WHERE team_id = $1
+	`
+
+	var settings domain.Settings
+	var aiProvider, embeddingModel, aiEndpoint, updatedBy sql.NullString
+
+	err := s.db.QueryRowContext(ctx, query, teamID).Scan(
+		&settings.TeamID,
+		&aiProvider,
+		&embeddingModel,
+		&aiEndpoint,
+		&settings.DefaultSearchMode,
+		&settings.ResultsPerPage,
+		&settings.MaxResultsPerPage,
+		&settings.SyncIntervalMinutes,
+		&settings.SyncEnabled,
+		&settings.SemanticSearchEnabled,
+		&settings.AutoSuggestEnabled,
+		&settings.UpdatedAt,
+		&updatedBy,
+	)
+	if err == sql.ErrNoRows {
+		// Return default settings if not found
+		return domain.DefaultSettings(teamID), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if aiProvider.Valid {
+		settings.AIProvider = domain.AIProvider(aiProvider.String)
+	}
+	settings.EmbeddingModel = embeddingModel.String
+	settings.AIEndpoint = aiEndpoint.String
+	settings.UpdatedBy = updatedBy.String
+
+	return &settings, nil
+}
+
+// SaveSettings persists team settings
+func (s *SettingsStore) SaveSettings(ctx context.Context, settings *domain.Settings) error {
+	query := `
+		INSERT INTO settings (team_id, ai_provider, embedding_model, ai_endpoint, default_search_mode,
+							  results_per_page, max_results_per_page, sync_interval_minutes, sync_enabled,
+							  semantic_search_enabled, auto_suggest_enabled, updated_at, updated_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		ON CONFLICT (team_id) DO UPDATE SET
+			ai_provider = EXCLUDED.ai_provider,
+			embedding_model = EXCLUDED.embedding_model,
+			ai_endpoint = EXCLUDED.ai_endpoint,
+			default_search_mode = EXCLUDED.default_search_mode,
+			results_per_page = EXCLUDED.results_per_page,
+			max_results_per_page = EXCLUDED.max_results_per_page,
+			sync_interval_minutes = EXCLUDED.sync_interval_minutes,
+			sync_enabled = EXCLUDED.sync_enabled,
+			semantic_search_enabled = EXCLUDED.semantic_search_enabled,
+			auto_suggest_enabled = EXCLUDED.auto_suggest_enabled,
+			updated_at = EXCLUDED.updated_at,
+			updated_by = EXCLUDED.updated_by
+	`
+
+	settings.UpdatedAt = time.Now()
+
+	_, err := s.db.ExecContext(ctx, query,
+		settings.TeamID,
+		string(settings.AIProvider),
+		settings.EmbeddingModel,
+		settings.AIEndpoint,
+		string(settings.DefaultSearchMode),
+		settings.ResultsPerPage,
+		settings.MaxResultsPerPage,
+		settings.SyncIntervalMinutes,
+		settings.SyncEnabled,
+		settings.SemanticSearchEnabled,
+		settings.AutoSuggestEnabled,
+		settings.UpdatedAt,
+		settings.UpdatedBy,
+	)
+	return err
+}
+
+// GetAISettings retrieves AI-specific settings for a team
+func (s *SettingsStore) GetAISettings(ctx context.Context, teamID string) (*domain.AISettings, error) {
+	query := `
+		SELECT team_id, embedding_provider, embedding_model, embedding_api_key, embedding_base_url,
+			   llm_provider, llm_model, llm_api_key, llm_base_url, updated_at
+		FROM ai_settings
+		WHERE team_id = $1
+	`
+
+	var settings domain.AISettings
+	var embProvider, embModel, embAPIKey, embBaseURL sql.NullString
+	var llmProvider, llmModel, llmAPIKey, llmBaseURL sql.NullString
+
+	err := s.db.QueryRowContext(ctx, query, teamID).Scan(
+		&settings.TeamID,
+		&embProvider,
+		&embModel,
+		&embAPIKey,
+		&embBaseURL,
+		&llmProvider,
+		&llmModel,
+		&llmAPIKey,
+		&llmBaseURL,
+		&settings.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		// Return empty settings if not found
+		return &domain.AISettings{TeamID: teamID}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if embProvider.Valid {
+		settings.Embedding.Provider = domain.AIProvider(embProvider.String)
+	}
+	settings.Embedding.Model = embModel.String
+	settings.Embedding.APIKey = embAPIKey.String
+	settings.Embedding.BaseURL = embBaseURL.String
+
+	if llmProvider.Valid {
+		settings.LLM.Provider = domain.AIProvider(llmProvider.String)
+	}
+	settings.LLM.Model = llmModel.String
+	settings.LLM.APIKey = llmAPIKey.String
+	settings.LLM.BaseURL = llmBaseURL.String
+
+	return &settings, nil
+}
+
+// SaveAISettings persists AI-specific settings
+func (s *SettingsStore) SaveAISettings(ctx context.Context, teamID string, settings *domain.AISettings) error {
+	query := `
+		INSERT INTO ai_settings (team_id, embedding_provider, embedding_model, embedding_api_key, embedding_base_url,
+								 llm_provider, llm_model, llm_api_key, llm_base_url, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (team_id) DO UPDATE SET
+			embedding_provider = EXCLUDED.embedding_provider,
+			embedding_model = EXCLUDED.embedding_model,
+			embedding_api_key = EXCLUDED.embedding_api_key,
+			embedding_base_url = EXCLUDED.embedding_base_url,
+			llm_provider = EXCLUDED.llm_provider,
+			llm_model = EXCLUDED.llm_model,
+			llm_api_key = EXCLUDED.llm_api_key,
+			llm_base_url = EXCLUDED.llm_base_url,
+			updated_at = EXCLUDED.updated_at
+	`
+
+	settings.UpdatedAt = time.Now()
+
+	_, err := s.db.ExecContext(ctx, query,
+		teamID,
+		string(settings.Embedding.Provider),
+		settings.Embedding.Model,
+		settings.Embedding.APIKey,
+		settings.Embedding.BaseURL,
+		string(settings.LLM.Provider),
+		settings.LLM.Model,
+		settings.LLM.APIKey,
+		settings.LLM.BaseURL,
+		settings.UpdatedAt,
+	)
+	return err
+}
