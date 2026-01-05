@@ -7,9 +7,11 @@ import (
 	"embed"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,6 +21,9 @@ import (
 	"github.com/custodia-labs/sercha-core/internal/core/domain"
 	"github.com/custodia-labs/sercha-core/internal/core/ports/driven"
 )
+
+// ErrInvalidEndpoint is returned when the endpoint URL is malformed or uses an unsupported scheme
+var ErrInvalidEndpoint = errors.New("invalid endpoint URL: must be a valid http or https URL")
 
 //go:embed schemas/services.xml schemas/chunk_bm25.sd schemas/chunk_hybrid.sd.tmpl
 var schemaFS embed.FS
@@ -40,10 +45,35 @@ func NewDeployer() *Deployer {
 	}
 }
 
+// validateEndpoint validates that the endpoint is a well-formed HTTP(S) URL
+// This prevents SSRF attacks by ensuring only valid Vespa endpoints are used
+func validateEndpoint(endpoint string) (string, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return "", ErrInvalidEndpoint
+	}
+
+	// Only allow http and https schemes
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", ErrInvalidEndpoint
+	}
+
+	// Ensure host is present
+	if parsed.Host == "" {
+		return "", ErrInvalidEndpoint
+	}
+
+	// Return normalized endpoint without trailing slash
+	return strings.TrimSuffix(parsed.String(), "/"), nil
+}
+
 // Deploy deploys the Vespa application package
 // If existingPkg is provided, merges our schema into it instead of using embedded services.xml
 func (d *Deployer) Deploy(ctx context.Context, endpoint string, embeddingDim *int, existingPkg *driven.AppPackage) (*domain.VespaDeployResult, error) {
-	endpoint = strings.TrimSuffix(endpoint, "/")
+	endpoint, err := validateEndpoint(endpoint)
+	if err != nil {
+		return nil, err
+	}
 
 	// Determine schema mode
 	mode := domain.VespacSchemaModeBM25
@@ -115,7 +145,10 @@ func (d *Deployer) Deploy(ctx context.Context, endpoint string, embeddingDim *in
 
 // FetchAppPackage retrieves the currently deployed application package from Vespa
 func (d *Deployer) FetchAppPackage(ctx context.Context, endpoint string) (*driven.AppPackage, error) {
-	endpoint = strings.TrimSuffix(endpoint, "/")
+	endpoint, err := validateEndpoint(endpoint)
+	if err != nil {
+		return nil, err
+	}
 	baseURL := fmt.Sprintf("%s/application/v2/tenant/default/application/default/environment/default/region/default/instance/default/content", endpoint)
 
 	// Check if application exists first
@@ -374,7 +407,10 @@ func (d *Deployer) parseHostsXML(content string, info *domain.VespaClusterInfo) 
 
 // GetSchemaInfo retrieves information about the currently deployed schema
 func (d *Deployer) GetSchemaInfo(ctx context.Context, endpoint string) (*driven.SchemaInfo, error) {
-	endpoint = strings.TrimSuffix(endpoint, "/")
+	endpoint, err := validateEndpoint(endpoint)
+	if err != nil {
+		return nil, err
+	}
 
 	// Try to get application status
 	statusURL := fmt.Sprintf("%s/application/v2/tenant/default/application/default", endpoint)
@@ -405,7 +441,10 @@ func (d *Deployer) GetSchemaInfo(ctx context.Context, endpoint string) (*driven.
 
 // HealthCheck verifies the Vespa cluster is healthy
 func (d *Deployer) HealthCheck(ctx context.Context, endpoint string) error {
-	endpoint = strings.TrimSuffix(endpoint, "/")
+	endpoint, err := validateEndpoint(endpoint)
+	if err != nil {
+		return err
+	}
 	healthURL := fmt.Sprintf("%s/state/v1/health", endpoint)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
