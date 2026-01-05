@@ -1,0 +1,159 @@
+-- Sercha Core PostgreSQL Schema
+-- This schema is idempotent - can be run multiple times safely
+
+-- Users table
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'member',
+    team_id TEXT NOT NULL,
+    active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_login_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_team_id ON users(team_id);
+
+-- Sessions table
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token TEXT UNIQUE NOT NULL,
+    refresh_token TEXT UNIQUE NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    user_agent TEXT,
+    ip_address TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
+CREATE INDEX IF NOT EXISTS idx_sessions_refresh_token ON sessions(refresh_token);
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+
+-- Settings table (team-wide configuration)
+CREATE TABLE IF NOT EXISTS settings (
+    team_id TEXT PRIMARY KEY,
+    ai_provider TEXT,
+    embedding_model TEXT,
+    ai_endpoint TEXT,
+    default_search_mode TEXT NOT NULL DEFAULT 'hybrid',
+    results_per_page INT NOT NULL DEFAULT 20,
+    max_results_per_page INT NOT NULL DEFAULT 100,
+    sync_interval_minutes INT NOT NULL DEFAULT 60,
+    sync_enabled BOOLEAN NOT NULL DEFAULT true,
+    semantic_search_enabled BOOLEAN NOT NULL DEFAULT true,
+    auto_suggest_enabled BOOLEAN NOT NULL DEFAULT true,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_by TEXT
+);
+
+-- AI Settings table (API keys stored separately for security)
+CREATE TABLE IF NOT EXISTS ai_settings (
+    team_id TEXT PRIMARY KEY,
+    embedding_provider TEXT,
+    embedding_model TEXT,
+    embedding_api_key TEXT,
+    embedding_base_url TEXT,
+    llm_provider TEXT,
+    llm_model TEXT,
+    llm_api_key TEXT,
+    llm_base_url TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Sources table (data sources to index)
+CREATE TABLE IF NOT EXISTS sources (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    provider_type TEXT NOT NULL,
+    config JSONB NOT NULL DEFAULT '{}',
+    enabled BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_by TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_sources_provider_type ON sources(provider_type);
+CREATE INDEX IF NOT EXISTS idx_sources_enabled ON sources(enabled);
+
+-- Documents table (indexed documents from sources)
+CREATE TABLE IF NOT EXISTS documents (
+    id TEXT PRIMARY KEY,
+    source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    external_id TEXT NOT NULL,
+    path TEXT,
+    title TEXT,
+    mime_type TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    indexed_at TIMESTAMPTZ,
+    UNIQUE(source_id, external_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_documents_source_id ON documents(source_id);
+CREATE INDEX IF NOT EXISTS idx_documents_external_id ON documents(external_id);
+
+-- Chunks table (searchable chunks of documents)
+-- Note: embeddings are stored in Vespa, not here
+CREATE TABLE IF NOT EXISTS chunks (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    source_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    position INT NOT NULL,
+    start_char INT NOT NULL,
+    end_char INT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_source_id ON chunks(source_id);
+
+-- Sync states table (tracks sync progress per source)
+CREATE TABLE IF NOT EXISTS sync_states (
+    source_id TEXT PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'idle',
+    last_sync_at TIMESTAMPTZ,
+    next_sync_at TIMESTAMPTZ,
+    cursor TEXT,
+    stats JSONB NOT NULL DEFAULT '{}',
+    error TEXT,
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ
+);
+
+-- Scheduled tasks table (recurring task configuration)
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    team_id TEXT NOT NULL,
+    interval_ns BIGINT NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT true,
+    next_run TIMESTAMPTZ NOT NULL,
+    last_run TIMESTAMPTZ,
+    last_error TEXT,
+    payload JSONB NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next_run ON scheduled_tasks(next_run) WHERE enabled = true;
+CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_team_id ON scheduled_tasks(team_id);
+
+-- Vespa config table (tracks Vespa connection and schema state)
+CREATE TABLE IF NOT EXISTS vespa_config (
+    team_id TEXT PRIMARY KEY,
+    endpoint TEXT NOT NULL DEFAULT 'http://vespa:19071',
+    connected BOOLEAN NOT NULL DEFAULT false,
+    schema_mode TEXT,
+    embedding_dim INT,
+    embedding_provider TEXT,
+    schema_version TEXT,
+    connected_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

@@ -1,0 +1,306 @@
+package services
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/custodia-labs/sercha-core/internal/core/domain"
+	"github.com/custodia-labs/sercha-core/internal/core/ports/driven/mocks"
+)
+
+func TestDocumentService_Get(t *testing.T) {
+	documentStore := mocks.NewMockDocumentStore()
+	chunkStore := mocks.NewMockChunkStore()
+	svc := NewDocumentService(documentStore, chunkStore)
+
+	// Create a document
+	doc := &domain.Document{
+		ID:        "doc-123",
+		SourceID:  "source-456",
+		Title:     "Test Document",
+		MimeType:  "text/markdown",
+		CreatedAt: time.Now(),
+	}
+	_ = documentStore.Save(context.Background(), doc)
+
+	// Get the document
+	result, err := svc.Get(context.Background(), "doc-123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.ID != doc.ID {
+		t.Errorf("expected document ID %s, got %s", doc.ID, result.ID)
+	}
+	if result.Title != doc.Title {
+		t.Errorf("expected title %s, got %s", doc.Title, result.Title)
+	}
+
+	// Get non-existent document
+	_, err = svc.Get(context.Background(), "non-existent")
+	if err != domain.ErrNotFound {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestDocumentService_GetWithChunks(t *testing.T) {
+	documentStore := mocks.NewMockDocumentStore()
+	chunkStore := mocks.NewMockChunkStore()
+	svc := NewDocumentService(documentStore, chunkStore)
+
+	// Create a document with chunks
+	doc := &domain.Document{
+		ID:       "doc-123",
+		SourceID: "source-456",
+		Title:    "Test Document",
+	}
+	_ = documentStore.Save(context.Background(), doc)
+
+	chunks := []*domain.Chunk{
+		{
+			ID:         "chunk-1",
+			DocumentID: "doc-123",
+			SourceID:   "source-456",
+			Content:    "First chunk content",
+			Position:   0,
+		},
+		{
+			ID:         "chunk-2",
+			DocumentID: "doc-123",
+			SourceID:   "source-456",
+			Content:    "Second chunk content",
+			Position:   1,
+		},
+	}
+	for _, chunk := range chunks {
+		_ = chunkStore.Save(context.Background(), chunk)
+	}
+
+	// Get document with chunks
+	result, err := svc.GetWithChunks(context.Background(), "doc-123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Document.ID != doc.ID {
+		t.Errorf("expected document ID %s, got %s", doc.ID, result.Document.ID)
+	}
+	if len(result.Chunks) != 2 {
+		t.Errorf("expected 2 chunks, got %d", len(result.Chunks))
+	}
+}
+
+func TestDocumentService_GetContent(t *testing.T) {
+	documentStore := mocks.NewMockDocumentStore()
+	chunkStore := mocks.NewMockChunkStore()
+	svc := NewDocumentService(documentStore, chunkStore)
+
+	// Create a document with chunks
+	doc := &domain.Document{
+		ID:       "doc-123",
+		SourceID: "source-456",
+		Title:    "Test Document",
+		Metadata: map[string]string{
+			"author": "test-user",
+		},
+	}
+	_ = documentStore.Save(context.Background(), doc)
+
+	chunks := []*domain.Chunk{
+		{
+			ID:         "chunk-1",
+			DocumentID: "doc-123",
+			Content:    "First part of the content. ",
+			Position:   0,
+		},
+		{
+			ID:         "chunk-2",
+			DocumentID: "doc-123",
+			Content:    "Second part of the content.",
+			Position:   1,
+		},
+	}
+	for _, chunk := range chunks {
+		_ = chunkStore.Save(context.Background(), chunk)
+	}
+
+	// Get document content
+	content, err := svc.GetContent(context.Background(), "doc-123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if content.DocumentID != doc.ID {
+		t.Errorf("expected document ID %s, got %s", doc.ID, content.DocumentID)
+	}
+	if content.Title != doc.Title {
+		t.Errorf("expected title %s, got %s", doc.Title, content.Title)
+	}
+	expectedBody := "First part of the content. Second part of the content."
+	if content.Body != expectedBody {
+		t.Errorf("expected body %s, got %s", expectedBody, content.Body)
+	}
+	if content.Metadata["author"] != "test-user" {
+		t.Errorf("expected author test-user, got %s", content.Metadata["author"])
+	}
+}
+
+func TestDocumentService_GetBySource(t *testing.T) {
+	documentStore := mocks.NewMockDocumentStore()
+	chunkStore := mocks.NewMockChunkStore()
+	svc := NewDocumentService(documentStore, chunkStore)
+
+	// Create documents for a source
+	for i := 0; i < 5; i++ {
+		doc := &domain.Document{
+			ID:       generateID(),
+			SourceID: "source-123",
+			Title:    "Document " + string(rune('0'+i)),
+		}
+		_ = documentStore.Save(context.Background(), doc)
+	}
+
+	// Create documents for another source
+	for i := 0; i < 3; i++ {
+		doc := &domain.Document{
+			ID:       generateID(),
+			SourceID: "source-456",
+			Title:    "Other Document " + string(rune('0'+i)),
+		}
+		_ = documentStore.Save(context.Background(), doc)
+	}
+
+	// Get documents for source-123
+	docs, err := svc.GetBySource(context.Background(), "source-123", 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(docs) != 5 {
+		t.Errorf("expected 5 documents, got %d", len(docs))
+	}
+
+	// Test pagination
+	docs, err = svc.GetBySource(context.Background(), "source-123", 2, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(docs) != 2 {
+		t.Errorf("expected 2 documents with limit 2, got %d", len(docs))
+	}
+
+	docs, err = svc.GetBySource(context.Background(), "source-123", 10, 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(docs) != 2 {
+		t.Errorf("expected 2 documents with offset 3, got %d", len(docs))
+	}
+}
+
+func TestDocumentService_GetBySource_LimitValidation(t *testing.T) {
+	documentStore := mocks.NewMockDocumentStore()
+	chunkStore := mocks.NewMockChunkStore()
+	svc := NewDocumentService(documentStore, chunkStore)
+
+	// Create documents
+	for i := 0; i < 10; i++ {
+		doc := &domain.Document{
+			ID:       generateID(),
+			SourceID: "source-123",
+			Title:    "Document " + string(rune('0'+i)),
+		}
+		_ = documentStore.Save(context.Background(), doc)
+	}
+
+	// Test with 0 limit (should default to 50)
+	docs, err := svc.GetBySource(context.Background(), "source-123", 0, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(docs) != 10 {
+		t.Errorf("expected 10 documents, got %d", len(docs))
+	}
+
+	// Test with negative limit
+	docs, err = svc.GetBySource(context.Background(), "source-123", -1, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(docs) != 10 {
+		t.Errorf("expected 10 documents with negative limit, got %d", len(docs))
+	}
+}
+
+func TestDocumentService_Count(t *testing.T) {
+	documentStore := mocks.NewMockDocumentStore()
+	chunkStore := mocks.NewMockChunkStore()
+	svc := NewDocumentService(documentStore, chunkStore)
+
+	// Create documents
+	for i := 0; i < 10; i++ {
+		doc := &domain.Document{
+			ID:       generateID(),
+			SourceID: "source-" + string(rune('0'+i%3)),
+			Title:    "Document " + string(rune('0'+i)),
+		}
+		_ = documentStore.Save(context.Background(), doc)
+	}
+
+	// Count all
+	count, err := svc.Count(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 10 {
+		t.Errorf("expected 10 documents, got %d", count)
+	}
+}
+
+func TestDocumentService_CountBySource(t *testing.T) {
+	documentStore := mocks.NewMockDocumentStore()
+	chunkStore := mocks.NewMockChunkStore()
+	svc := NewDocumentService(documentStore, chunkStore)
+
+	// Create documents for source-123
+	for i := 0; i < 5; i++ {
+		doc := &domain.Document{
+			ID:       generateID(),
+			SourceID: "source-123",
+			Title:    "Document " + string(rune('0'+i)),
+		}
+		_ = documentStore.Save(context.Background(), doc)
+	}
+
+	// Create documents for source-456
+	for i := 0; i < 3; i++ {
+		doc := &domain.Document{
+			ID:       generateID(),
+			SourceID: "source-456",
+			Title:    "Other Document " + string(rune('0'+i)),
+		}
+		_ = documentStore.Save(context.Background(), doc)
+	}
+
+	// Count by source
+	count, err := svc.CountBySource(context.Background(), "source-123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 5 {
+		t.Errorf("expected 5 documents for source-123, got %d", count)
+	}
+
+	count, err = svc.CountBySource(context.Background(), "source-456")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("expected 3 documents for source-456, got %d", count)
+	}
+
+	count, err = svc.CountBySource(context.Background(), "non-existent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 documents for non-existent source, got %d", count)
+	}
+}

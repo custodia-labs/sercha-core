@@ -94,7 +94,6 @@ type OAuthTokenProvider struct {
 	creds      *domain.Credentials
 	refresher  TokenRefresher
 	store      CredentialsStore
-	lastCheck  time.Time
 	checkEvery time.Duration
 }
 

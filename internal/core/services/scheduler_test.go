@@ -316,9 +316,9 @@ func TestScheduler_ListScheduledTasks(t *testing.T) {
 	ctx := context.Background()
 
 	// Create some scheduled tasks
-	s.CreateScheduledTask(ctx, domain.NewScheduledTask("s1", "Sync 1", domain.TaskTypeSyncAll, "team-1", time.Hour))
-	s.CreateScheduledTask(ctx, domain.NewScheduledTask("s2", "Sync 2", domain.TaskTypeSyncAll, "team-1", time.Hour))
-	s.CreateScheduledTask(ctx, domain.NewScheduledTask("s3", "Sync 3", domain.TaskTypeSyncAll, "team-2", time.Hour))
+	_ = s.CreateScheduledTask(ctx, domain.NewScheduledTask("s1", "Sync 1", domain.TaskTypeSyncAll, "team-1", time.Hour))
+	_ = s.CreateScheduledTask(ctx, domain.NewScheduledTask("s2", "Sync 2", domain.TaskTypeSyncAll, "team-1", time.Hour))
+	_ = s.CreateScheduledTask(ctx, domain.NewScheduledTask("s3", "Sync 3", domain.TaskTypeSyncAll, "team-2", time.Hour))
 
 	// List for team-1
 	tasks, err := s.ListScheduledTasks(ctx, "team-1")
@@ -351,7 +351,7 @@ func TestScheduler_UpdateScheduledTask(t *testing.T) {
 	ctx := context.Background()
 
 	scheduled := domain.NewScheduledTask("s1", "Original", domain.TaskTypeSyncAll, "team-1", time.Hour)
-	s.CreateScheduledTask(ctx, scheduled)
+	_ = s.CreateScheduledTask(ctx, scheduled)
 
 	// Update it
 	scheduled.Name = "Updated"
@@ -384,7 +384,7 @@ func TestScheduler_DeleteScheduledTask(t *testing.T) {
 	ctx := context.Background()
 
 	scheduled := domain.NewScheduledTask("s1", "Test", domain.TaskTypeSyncAll, "team-1", time.Hour)
-	s.CreateScheduledTask(ctx, scheduled)
+	_ = s.CreateScheduledTask(ctx, scheduled)
 
 	// Delete it
 	err := s.DeleteScheduledTask(ctx, "s1")
@@ -412,7 +412,7 @@ func TestScheduler_EnableDisable(t *testing.T) {
 
 	scheduled := domain.NewScheduledTask("s1", "Test", domain.TaskTypeSyncAll, "team-1", time.Hour)
 	scheduled.Enabled = true
-	s.CreateScheduledTask(ctx, scheduled)
+	_ = s.CreateScheduledTask(ctx, scheduled)
 
 	// Disable
 	err := s.DisableScheduledTask(ctx, "s1")
@@ -449,7 +449,7 @@ func TestScheduler_TriggerNow(t *testing.T) {
 	ctx := context.Background()
 
 	scheduled := domain.NewScheduledTask("s1", "Test", domain.TaskTypeSyncAll, "team-1", time.Hour)
-	s.CreateScheduledTask(ctx, scheduled)
+	_ = s.CreateScheduledTask(ctx, scheduled)
 
 	// Trigger immediately
 	task, err := s.TriggerNow(ctx, "s1")
@@ -507,19 +507,19 @@ func TestScheduler_CheckAndEnqueue(t *testing.T) {
 	scheduled := domain.NewScheduledTask("s1", "Test", domain.TaskTypeSyncAll, "team-1", time.Hour)
 	scheduled.Enabled = true
 	scheduled.NextRun = time.Now().Add(-time.Minute) // Due 1 minute ago
-	s.CreateScheduledTask(ctx, scheduled)
+	_ = s.CreateScheduledTask(ctx, scheduled)
 
 	// Create a not-due task
 	scheduled2 := domain.NewScheduledTask("s2", "Test2", domain.TaskTypeSyncAll, "team-1", time.Hour)
 	scheduled2.Enabled = true
 	scheduled2.NextRun = time.Now().Add(time.Hour) // Due in 1 hour
-	s.CreateScheduledTask(ctx, scheduled2)
+	_ = s.CreateScheduledTask(ctx, scheduled2)
 
 	// Create a disabled task
 	scheduled3 := domain.NewScheduledTask("s3", "Test3", domain.TaskTypeSyncAll, "team-1", time.Hour)
 	scheduled3.Enabled = false
 	scheduled3.NextRun = time.Now().Add(-time.Minute) // Due but disabled
-	s.CreateScheduledTask(ctx, scheduled3)
+	_ = s.CreateScheduledTask(ctx, scheduled3)
 
 	// Run check and enqueue
 	s.checkAndEnqueue(ctx)
@@ -556,7 +556,7 @@ func TestScheduler_CheckAndEnqueue_EnqueueError(t *testing.T) {
 	scheduled := domain.NewScheduledTask("s1", "Test", domain.TaskTypeSyncAll, "team-1", time.Hour)
 	scheduled.Enabled = true
 	scheduled.NextRun = time.Now().Add(-time.Minute)
-	s.CreateScheduledTask(ctx, scheduled)
+	_ = s.CreateScheduledTask(ctx, scheduled)
 
 	// Run check and enqueue - should handle error gracefully
 	s.checkAndEnqueue(ctx)

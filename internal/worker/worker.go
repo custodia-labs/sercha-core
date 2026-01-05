@@ -13,11 +13,18 @@ import (
 	"github.com/custodia-labs/sercha-core/internal/core/services"
 )
 
+// Orchestrator defines the sync operations needed by the worker.
+// This is a minimal interface to allow for testing.
+type Orchestrator interface {
+	SyncSource(ctx context.Context, sourceID string) (*domain.SyncResult, error)
+	SyncAll(ctx context.Context) ([]*domain.SyncResult, error)
+}
+
 // Worker processes tasks from the task queue.
 // It runs the sync orchestrator for each sync task.
 type Worker struct {
 	taskQueue    driven.TaskQueue
-	orchestrator *services.SyncOrchestrator
+	orchestrator Orchestrator
 	scheduler    *services.Scheduler
 	logger       *slog.Logger
 
@@ -35,7 +42,7 @@ type Worker struct {
 // WorkerConfig holds configuration for the worker.
 type WorkerConfig struct {
 	TaskQueue      driven.TaskQueue
-	Orchestrator   *services.SyncOrchestrator
+	Orchestrator   Orchestrator
 	Scheduler      *services.Scheduler
 	Logger         *slog.Logger
 	Concurrency    int // Number of concurrent task processors

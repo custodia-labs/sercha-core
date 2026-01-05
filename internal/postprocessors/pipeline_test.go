@@ -189,13 +189,8 @@ func TestChunker_PreserveSentences(t *testing.T) {
 	chunks := c.Process(input)
 
 	// Should break at sentence boundaries when possible
-	for _, chunk := range chunks {
-		trimmed := strings.TrimSpace(chunk.Content)
-		if len(trimmed) > 0 && !strings.HasSuffix(trimmed, ".") && len(trimmed) < config.MaxChunkSize {
-			// Small chunks should end with sentence boundary unless at end of content
-			// This is a soft check - the algorithm tries but may not always succeed
-		}
-	}
+	// This is a soft check - the algorithm tries but may not always succeed
+	_ = chunks // Verify chunks were produced without panicking
 }
 
 func TestChunker_PreserveParagraphs(t *testing.T) {

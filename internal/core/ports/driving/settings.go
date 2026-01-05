@@ -1,0 +1,90 @@
+package driving
+
+import (
+	"context"
+
+	"github.com/custodia-labs/sercha-core/internal/core/domain"
+)
+
+// UpdateSettingsRequest represents a request to update settings
+type UpdateSettingsRequest struct {
+	AIProvider            *domain.AIProvider  `json:"ai_provider,omitempty"`
+	EmbeddingModel        *string             `json:"embedding_model,omitempty"`
+	AIEndpoint            *string             `json:"ai_endpoint,omitempty"`
+	DefaultSearchMode     *domain.SearchMode  `json:"default_search_mode,omitempty"`
+	ResultsPerPage        *int                `json:"results_per_page,omitempty"`
+	SyncIntervalMinutes   *int                `json:"sync_interval_minutes,omitempty"`
+	SyncEnabled           *bool               `json:"sync_enabled,omitempty"`
+	SemanticSearchEnabled *bool               `json:"semantic_search_enabled,omitempty"`
+	AutoSuggestEnabled    *bool               `json:"auto_suggest_enabled,omitempty"`
+}
+
+// SettingsService manages team-wide settings (admin only)
+type SettingsService interface {
+	// Get retrieves the current settings
+	Get(ctx context.Context) (*domain.Settings, error)
+
+	// Update updates settings (admin only)
+	Update(ctx context.Context, updaterID string, req UpdateSettingsRequest) (*domain.Settings, error)
+
+	// GetAISettings retrieves the current AI configuration
+	GetAISettings(ctx context.Context) (*domain.AISettings, error)
+
+	// UpdateAISettings updates AI configuration and hot-reloads services
+	// Returns the updated settings and whether each service is now available
+	UpdateAISettings(ctx context.Context, req UpdateAISettingsRequest) (*AISettingsStatus, error)
+
+	// GetAIStatus returns the current status of AI services
+	GetAIStatus(ctx context.Context) (*AISettingsStatus, error)
+
+	// TestConnection tests the AI provider connection
+	TestConnection(ctx context.Context) error
+}
+
+// UpdateAISettingsRequest represents a request to update AI settings
+type UpdateAISettingsRequest struct {
+	Embedding *EmbeddingSettingsInput `json:"embedding,omitempty"`
+	LLM       *LLMSettingsInput       `json:"llm,omitempty"`
+}
+
+// EmbeddingSettingsInput is the input for embedding configuration
+type EmbeddingSettingsInput struct {
+	Provider domain.AIProvider `json:"provider"`
+	Model    string            `json:"model"`
+	APIKey   string            `json:"api_key"`
+	BaseURL  string            `json:"base_url,omitempty"`
+}
+
+// LLMSettingsInput is the input for LLM configuration
+type LLMSettingsInput struct {
+	Provider domain.AIProvider `json:"provider"`
+	Model    string            `json:"model"`
+	APIKey   string            `json:"api_key"`
+	BaseURL  string            `json:"base_url,omitempty"`
+}
+
+// AISettingsStatus represents the status of AI services
+type AISettingsStatus struct {
+	Embedding           AIServiceStatus   `json:"embedding"`
+	LLM                 AIServiceStatus   `json:"llm"`
+	Vespa               VespaServiceStatus `json:"vespa"`
+	EffectiveSearchMode domain.SearchMode `json:"effective_search_mode"`
+}
+
+// VespaServiceStatus represents the status of the Vespa search engine
+type VespaServiceStatus struct {
+	Connected         bool                   `json:"connected"`
+	SchemaMode        domain.VespaSchemaMode `json:"schema_mode"`
+	EmbeddingsEnabled bool                   `json:"embeddings_enabled"`
+	EmbeddingDim      int                    `json:"embedding_dim,omitempty"`
+	CanUpgrade        bool                   `json:"can_upgrade"`
+	Healthy           bool                   `json:"healthy"`
+}
+
+// AIServiceStatus represents the status of a single AI service
+type AIServiceStatus struct {
+	Available    bool              `json:"available"`
+	Provider     domain.AIProvider `json:"provider,omitempty"`
+	Model        string            `json:"model,omitempty"`
+	EmbeddingDim int               `json:"embedding_dim,omitempty"` // Only for embedding service
+}

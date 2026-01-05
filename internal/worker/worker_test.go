@@ -420,3 +420,414 @@ func TestWorkerConfig(t *testing.T) {
 func TestMockTaskQueueInterface(t *testing.T) {
 	var _ driven.TaskQueue = (*mockTaskQueue)(nil)
 }
+
+// mockOrchestrator implements Orchestrator for testing
+type mockOrchestrator struct {
+	syncSourceFn func(ctx context.Context, sourceID string) (*domain.SyncResult, error)
+	syncAllFn    func(ctx context.Context) ([]*domain.SyncResult, error)
+}
+
+func (m *mockOrchestrator) SyncSource(ctx context.Context, sourceID string) (*domain.SyncResult, error) {
+	if m.syncSourceFn != nil {
+		return m.syncSourceFn(ctx, sourceID)
+	}
+	return &domain.SyncResult{Success: true, SourceID: sourceID}, nil
+}
+
+func (m *mockOrchestrator) SyncAll(ctx context.Context) ([]*domain.SyncResult, error) {
+	if m.syncAllFn != nil {
+		return m.syncAllFn(ctx)
+	}
+	return []*domain.SyncResult{{Success: true}}, nil
+}
+
+// Test that mock implements the interface
+func TestMockOrchestratorInterface(t *testing.T) {
+	var _ Orchestrator = (*mockOrchestrator)(nil)
+}
+
+func TestWorker_HandleSyncSource_Success(t *testing.T) {
+	queue := newMockTaskQueue()
+	orch := &mockOrchestrator{
+		syncSourceFn: func(ctx context.Context, sourceID string) (*domain.SyncResult, error) {
+			return &domain.SyncResult{
+				Success:  true,
+				SourceID: sourceID,
+			}, nil
+		},
+	}
+
+	var acked []string
+	queue.ackFn = func(taskID string) error {
+		acked = append(acked, taskID)
+		return nil
+	}
+
+	// Create sync_source task with source_id
+	task := &domain.Task{
+		ID:      "task-123",
+		Type:    domain.TaskTypeSyncSource,
+		TeamID:  "team-123",
+		Payload: map[string]string{"source_id": "source-456"},
+	}
+
+	w := NewWorker(WorkerConfig{
+		TaskQueue:    queue,
+		Orchestrator: orch,
+		Concurrency:  1,
+	})
+
+	ctx := context.Background()
+	w.processTask(ctx, task, slog.Default())
+
+	// Should be acked since sync was successful
+	if len(acked) != 1 {
+		t.Errorf("expected 1 ack, got %d", len(acked))
+	}
+}
+
+func TestWorker_HandleSyncSource_Error(t *testing.T) {
+	queue := newMockTaskQueue()
+	orch := &mockOrchestrator{
+		syncSourceFn: func(ctx context.Context, sourceID string) (*domain.SyncResult, error) {
+			return nil, errors.New("connection failed")
+		},
+	}
+
+	var nacked []string
+	queue.nackFn = func(taskID, reason string) error {
+		nacked = append(nacked, taskID)
+		return nil
+	}
+
+	task := &domain.Task{
+		ID:      "task-123",
+		Type:    domain.TaskTypeSyncSource,
+		TeamID:  "team-123",
+		Payload: map[string]string{"source_id": "source-456"},
+	}
+
+	w := NewWorker(WorkerConfig{
+		TaskQueue:    queue,
+		Orchestrator: orch,
+		Concurrency:  1,
+	})
+
+	ctx := context.Background()
+	w.processTask(ctx, task, slog.Default())
+
+	// Should be nacked since sync failed
+	if len(nacked) != 1 {
+		t.Errorf("expected 1 nack, got %d", len(nacked))
+	}
+}
+
+func TestWorker_HandleSyncSource_NotSuccessful(t *testing.T) {
+	queue := newMockTaskQueue()
+	orch := &mockOrchestrator{
+		syncSourceFn: func(ctx context.Context, sourceID string) (*domain.SyncResult, error) {
+			return &domain.SyncResult{
+				Success:  false,
+				SourceID: sourceID,
+				Error:    "source is disabled",
+			}, nil
+		},
+	}
+
+	var nacked []string
+	queue.nackFn = func(taskID, reason string) error {
+		nacked = append(nacked, taskID)
+		return nil
+	}
+
+	task := &domain.Task{
+		ID:      "task-123",
+		Type:    domain.TaskTypeSyncSource,
+		TeamID:  "team-123",
+		Payload: map[string]string{"source_id": "source-456"},
+	}
+
+	w := NewWorker(WorkerConfig{
+		TaskQueue:    queue,
+		Orchestrator: orch,
+		Concurrency:  1,
+	})
+
+	ctx := context.Background()
+	w.processTask(ctx, task, slog.Default())
+
+	// Should be nacked since sync result indicates failure
+	if len(nacked) != 1 {
+		t.Errorf("expected 1 nack, got %d", len(nacked))
+	}
+}
+
+func TestWorker_HandleSyncAll_Success(t *testing.T) {
+	queue := newMockTaskQueue()
+	orch := &mockOrchestrator{
+		syncAllFn: func(ctx context.Context) ([]*domain.SyncResult, error) {
+			return []*domain.SyncResult{
+				{Success: true, SourceID: "source-1"},
+				{Success: true, SourceID: "source-2"},
+			}, nil
+		},
+	}
+
+	var acked []string
+	queue.ackFn = func(taskID string) error {
+		acked = append(acked, taskID)
+		return nil
+	}
+
+	task := &domain.Task{
+		ID:     "task-123",
+		Type:   domain.TaskTypeSyncAll,
+		TeamID: "team-123",
+	}
+
+	w := NewWorker(WorkerConfig{
+		TaskQueue:    queue,
+		Orchestrator: orch,
+		Concurrency:  1,
+	})
+
+	ctx := context.Background()
+	w.processTask(ctx, task, slog.Default())
+
+	// Should be acked
+	if len(acked) != 1 {
+		t.Errorf("expected 1 ack, got %d", len(acked))
+	}
+}
+
+func TestWorker_HandleSyncAll_PartialFailure(t *testing.T) {
+	queue := newMockTaskQueue()
+	orch := &mockOrchestrator{
+		syncAllFn: func(ctx context.Context) ([]*domain.SyncResult, error) {
+			return []*domain.SyncResult{
+				{Success: true, SourceID: "source-1"},
+				{Success: false, SourceID: "source-2", Error: "failed"},
+			}, nil
+		},
+	}
+
+	var acked []string
+	queue.ackFn = func(taskID string) error {
+		acked = append(acked, taskID)
+		return nil
+	}
+
+	task := &domain.Task{
+		ID:     "task-123",
+		Type:   domain.TaskTypeSyncAll,
+		TeamID: "team-123",
+	}
+
+	w := NewWorker(WorkerConfig{
+		TaskQueue:    queue,
+		Orchestrator: orch,
+		Concurrency:  1,
+	})
+
+	ctx := context.Background()
+	w.processTask(ctx, task, slog.Default())
+
+	// Should still be acked (partial failures are logged but task succeeds)
+	if len(acked) != 1 {
+		t.Errorf("expected 1 ack, got %d", len(acked))
+	}
+}
+
+func TestWorker_HandleSyncAll_Error(t *testing.T) {
+	queue := newMockTaskQueue()
+	orch := &mockOrchestrator{
+		syncAllFn: func(ctx context.Context) ([]*domain.SyncResult, error) {
+			return nil, errors.New("database connection failed")
+		},
+	}
+
+	var nacked []string
+	queue.nackFn = func(taskID, reason string) error {
+		nacked = append(nacked, taskID)
+		return nil
+	}
+
+	task := &domain.Task{
+		ID:     "task-123",
+		Type:   domain.TaskTypeSyncAll,
+		TeamID: "team-123",
+	}
+
+	w := NewWorker(WorkerConfig{
+		TaskQueue:    queue,
+		Orchestrator: orch,
+		Concurrency:  1,
+	})
+
+	ctx := context.Background()
+	w.processTask(ctx, task, slog.Default())
+
+	// Should be nacked
+	if len(nacked) != 1 {
+		t.Errorf("expected 1 nack, got %d", len(nacked))
+	}
+}
+
+func TestWorker_ProcessLoop_WithTasks(t *testing.T) {
+	queue := newMockTaskQueue()
+	orch := &mockOrchestrator{
+		syncSourceFn: func(ctx context.Context, sourceID string) (*domain.SyncResult, error) {
+			return &domain.SyncResult{Success: true, SourceID: sourceID}, nil
+		},
+	}
+
+	// Queue up a task
+	task := &domain.Task{
+		ID:      "task-1",
+		Type:    domain.TaskTypeSyncSource,
+		TeamID:  "team-1",
+		Payload: map[string]string{"source_id": "source-1"},
+	}
+	_ = queue.Enqueue(context.Background(), task)
+
+	var acked []string
+	queue.ackFn = func(taskID string) error {
+		acked = append(acked, taskID)
+		return nil
+	}
+
+	w := NewWorker(WorkerConfig{
+		TaskQueue:      queue,
+		Orchestrator:   orch,
+		Concurrency:    1,
+		DequeueTimeout: 1,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	err := w.Start(ctx)
+	if err != nil {
+		t.Fatalf("failed to start worker: %v", err)
+	}
+
+	// Wait for task to be processed
+	deadline := time.Now().Add(2 * time.Second)
+	for len(acked) == 0 && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	cancel()
+	w.Stop()
+
+	if len(acked) != 1 {
+		t.Errorf("expected 1 ack, got %d", len(acked))
+	}
+}
+
+func TestWorker_ProcessLoop_DequeueError(t *testing.T) {
+	queue := newMockTaskQueue()
+	callCount := 0
+	queue.dequeueFn = func() (*domain.Task, error) {
+		callCount++
+		if callCount < 3 {
+			return nil, errors.New("temporary error")
+		}
+		return nil, nil // No more errors
+	}
+
+	w := NewWorker(WorkerConfig{
+		TaskQueue:      queue,
+		Concurrency:    1,
+		DequeueTimeout: 1,
+	})
+
+	// Use a longer timeout since there's a 1s backoff after errors
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	err := w.Start(ctx)
+	if err != nil {
+		t.Fatalf("failed to start worker: %v", err)
+	}
+
+	// Wait for worker to process and handle errors (need time for backoff)
+	time.Sleep(2 * time.Second)
+	w.Stop()
+
+	// Should have retried after errors
+	if callCount < 2 {
+		t.Errorf("expected at least 2 dequeue attempts, got %d", callCount)
+	}
+}
+
+func TestWorker_Ack_Error(t *testing.T) {
+	queue := newMockTaskQueue()
+	orch := &mockOrchestrator{
+		syncSourceFn: func(ctx context.Context, sourceID string) (*domain.SyncResult, error) {
+			return &domain.SyncResult{Success: true, SourceID: sourceID}, nil
+		},
+	}
+
+	ackCalled := false
+	queue.ackFn = func(taskID string) error {
+		ackCalled = true
+		return errors.New("ack failed")
+	}
+
+	task := &domain.Task{
+		ID:      "task-123",
+		Type:    domain.TaskTypeSyncSource,
+		TeamID:  "team-123",
+		Payload: map[string]string{"source_id": "source-456"},
+	}
+
+	w := NewWorker(WorkerConfig{
+		TaskQueue:    queue,
+		Orchestrator: orch,
+		Concurrency:  1,
+	})
+
+	ctx := context.Background()
+	// This should not panic even if ack fails
+	w.processTask(ctx, task, slog.Default())
+
+	if !ackCalled {
+		t.Error("expected ack to be called")
+	}
+}
+
+func TestWorker_Nack_Error(t *testing.T) {
+	queue := newMockTaskQueue()
+	orch := &mockOrchestrator{
+		syncSourceFn: func(ctx context.Context, sourceID string) (*domain.SyncResult, error) {
+			return nil, errors.New("sync failed")
+		},
+	}
+
+	nackCalled := false
+	queue.nackFn = func(taskID, reason string) error {
+		nackCalled = true
+		return errors.New("nack failed")
+	}
+
+	task := &domain.Task{
+		ID:      "task-123",
+		Type:    domain.TaskTypeSyncSource,
+		TeamID:  "team-123",
+		Payload: map[string]string{"source_id": "source-456"},
+	}
+
+	w := NewWorker(WorkerConfig{
+		TaskQueue:    queue,
+		Orchestrator: orch,
+		Concurrency:  1,
+	})
+
+	ctx := context.Background()
+	// This should not panic even if nack fails
+	w.processTask(ctx, task, slog.Default())
+
+	if !nackCalled {
+		t.Error("expected nack to be called")
+	}
+}

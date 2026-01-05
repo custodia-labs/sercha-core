@@ -26,9 +26,6 @@ const (
 
 	// Claim timeout - how long before a task is considered abandoned
 	claimTimeout = 5 * time.Minute
-
-	// Pending check interval
-	pendingCheckInterval = 30 * time.Second
 )
 
 // Verify interface compliance
