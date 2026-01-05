@@ -56,13 +56,13 @@ func (m *MockConnector) FetchDocument(ctx context.Context, source *domain.Source
 
 // MockConnectorFactory is a mock implementation of ConnectorFactory for testing
 type MockConnectorFactory struct {
-	RegisterFn        func(builder interface{})
-	CreateFn          func(ctx context.Context, source *domain.Source) (*MockConnector, error)
-	SupportedTypesFn  func() []domain.ProviderType
-	GetBuilderFn      func(providerType domain.ProviderType) (interface{}, error)
-	SupportsOAuthFn   func(providerType domain.ProviderType) bool
-	GetOAuthConfigFn  func(providerType domain.ProviderType) interface{}
-	connector         *MockConnector
+	RegisterFn       func(builder interface{})
+	CreateFn         func(ctx context.Context, source *domain.Source) (*MockConnector, error)
+	SupportedTypesFn func() []domain.ProviderType
+	GetBuilderFn     func(providerType domain.ProviderType) (interface{}, error)
+	SupportsOAuthFn  func(providerType domain.ProviderType) bool
+	GetOAuthConfigFn func(providerType domain.ProviderType) interface{}
+	connector        *MockConnector
 }
 
 func NewMockConnectorFactory() *MockConnectorFactory {

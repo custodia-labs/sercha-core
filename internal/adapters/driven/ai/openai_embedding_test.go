@@ -322,7 +322,7 @@ func TestOpenAIEmbedding_EmbedQuery_EmptyResult(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := embeddingResponse{
 			Object: "list",
-			Data:   []struct {
+			Data: []struct {
 				Object    string    `json:"object"`
 				Index     int       `json:"index"`
 				Embedding []float32 `json:"embedding"`

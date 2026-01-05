@@ -21,11 +21,11 @@ func (s *Session) IsExpired() bool {
 
 // AuthContext contains authenticated user info for request context
 type AuthContext struct {
-	UserID   string `json:"user_id"`
-	Email    string `json:"email"`
-	Name     string `json:"name"`
-	Role     Role   `json:"role"`
-	TeamID   string `json:"team_id"`
+	UserID    string `json:"user_id"`
+	Email     string `json:"email"`
+	Name      string `json:"name"`
+	Role      Role   `json:"role"`
+	TeamID    string `json:"team_id"`
 	SessionID string `json:"session_id"`
 }
 

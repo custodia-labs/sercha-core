@@ -10,9 +10,9 @@ const (
 	ProviderTypeBitbucket ProviderType = "bitbucket"
 
 	// Communication
-	ProviderTypeSlack     ProviderType = "slack"
-	ProviderTypeDiscord   ProviderType = "discord"
-	ProviderTypeMSTeams   ProviderType = "msteams"
+	ProviderTypeSlack   ProviderType = "slack"
+	ProviderTypeDiscord ProviderType = "discord"
+	ProviderTypeMSTeams ProviderType = "msteams"
 
 	// Documentation
 	ProviderTypeNotion     ProviderType = "notion"
@@ -30,7 +30,7 @@ const (
 	ProviderTypeS3          ProviderType = "s3"
 
 	// Other
-	ProviderTypeZendesk ProviderType = "zendesk"
+	ProviderTypeZendesk  ProviderType = "zendesk"
 	ProviderTypeIntercom ProviderType = "intercom"
 )
 

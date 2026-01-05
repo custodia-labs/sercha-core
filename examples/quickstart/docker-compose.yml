@@ -1,0 +1,70 @@
+# Quickstart: Single container with all dependencies
+# Usage: docker compose up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sercha
+      POSTGRES_PASSWORD: sercha_dev
+      POSTGRES_DB: sercha
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sercha -d sercha"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  vespa:
+    image: vespaengine/vespa:8
+    ports:
+      - "19071:19071"
+    volumes:
+      - vespa_data:/opt/vespa/var
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:19071/state/v1/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 60s
+
+  sercha:
+    image: sercha-core:latest
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgres://sercha:sercha_dev@postgres:5432/sercha?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      VESPA_URL: http://vespa:19071
+      JWT_SECRET: change-me-in-production
+      PORT: 8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      vespa:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
+  vespa_data:

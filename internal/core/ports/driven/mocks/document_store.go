@@ -9,9 +9,9 @@ import (
 
 // MockDocumentStore is a mock implementation of DocumentStore for testing
 type MockDocumentStore struct {
-	mu        sync.RWMutex
-	documents map[string]*domain.Document
-	bySource  map[string][]*domain.Document
+	mu         sync.RWMutex
+	documents  map[string]*domain.Document
+	bySource   map[string][]*domain.Document
 	byExternal map[string]*domain.Document // key: sourceID:externalID
 }
 

@@ -8,15 +8,15 @@ import (
 
 // UpdateSettingsRequest represents a request to update settings
 type UpdateSettingsRequest struct {
-	AIProvider            *domain.AIProvider  `json:"ai_provider,omitempty"`
-	EmbeddingModel        *string             `json:"embedding_model,omitempty"`
-	AIEndpoint            *string             `json:"ai_endpoint,omitempty"`
-	DefaultSearchMode     *domain.SearchMode  `json:"default_search_mode,omitempty"`
-	ResultsPerPage        *int                `json:"results_per_page,omitempty"`
-	SyncIntervalMinutes   *int                `json:"sync_interval_minutes,omitempty"`
-	SyncEnabled           *bool               `json:"sync_enabled,omitempty"`
-	SemanticSearchEnabled *bool               `json:"semantic_search_enabled,omitempty"`
-	AutoSuggestEnabled    *bool               `json:"auto_suggest_enabled,omitempty"`
+	AIProvider            *domain.AIProvider `json:"ai_provider,omitempty"`
+	EmbeddingModel        *string            `json:"embedding_model,omitempty"`
+	AIEndpoint            *string            `json:"ai_endpoint,omitempty"`
+	DefaultSearchMode     *domain.SearchMode `json:"default_search_mode,omitempty"`
+	ResultsPerPage        *int               `json:"results_per_page,omitempty"`
+	SyncIntervalMinutes   *int               `json:"sync_interval_minutes,omitempty"`
+	SyncEnabled           *bool              `json:"sync_enabled,omitempty"`
+	SemanticSearchEnabled *bool              `json:"semantic_search_enabled,omitempty"`
+	AutoSuggestEnabled    *bool              `json:"auto_suggest_enabled,omitempty"`
 }
 
 // SettingsService manages team-wide settings (admin only)
@@ -65,10 +65,10 @@ type LLMSettingsInput struct {
 
 // AISettingsStatus represents the status of AI services
 type AISettingsStatus struct {
-	Embedding           AIServiceStatus   `json:"embedding"`
-	LLM                 AIServiceStatus   `json:"llm"`
+	Embedding           AIServiceStatus    `json:"embedding"`
+	LLM                 AIServiceStatus    `json:"llm"`
 	Vespa               VespaServiceStatus `json:"vespa"`
-	EffectiveSearchMode domain.SearchMode `json:"effective_search_mode"`
+	EffectiveSearchMode domain.SearchMode  `json:"effective_search_mode"`
 }
 
 // VespaServiceStatus represents the status of the Vespa search engine

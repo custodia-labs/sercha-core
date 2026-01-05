@@ -15,10 +15,10 @@ const (
 
 // Credentials stores authentication credentials for a source connector
 type Credentials struct {
-	ID           string     `json:"id"`
+	ID           string       `json:"id"`
 	ProviderType ProviderType `json:"provider_type"`
-	AuthMethod   AuthMethod `json:"auth_method"`
-	Name         string     `json:"name"` // User-friendly name
+	AuthMethod   AuthMethod   `json:"auth_method"`
+	Name         string       `json:"name"` // User-friendly name
 
 	// OAuth2 fields
 	AccessToken  string     `json:"-"` // Never serialize

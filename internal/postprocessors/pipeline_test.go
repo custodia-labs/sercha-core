@@ -454,8 +454,8 @@ func TestWhitespaceNormalizer_RemovesEmptyChunks(t *testing.T) {
 
 	chunks := []driven.Chunk{
 		{Content: "hello", Position: 0},
-		{Content: "   ", Position: 1},   // Empty after trim
-		{Content: "\n\n", Position: 2},  // Empty after trim
+		{Content: "   ", Position: 1},  // Empty after trim
+		{Content: "\n\n", Position: 2}, // Empty after trim
 		{Content: "world", Position: 3},
 	}
 

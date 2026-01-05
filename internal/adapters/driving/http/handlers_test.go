@@ -17,10 +17,10 @@ import (
 // Mock services for testing
 
 type mockAuthService struct {
-	authenticateFn   func(ctx context.Context, req domain.LoginRequest) (*domain.LoginResponse, error)
-	validateTokenFn  func(ctx context.Context, token string) (*domain.AuthContext, error)
-	refreshTokenFn   func(ctx context.Context, req domain.RefreshRequest) (*domain.LoginResponse, error)
-	logoutFn         func(ctx context.Context, token string) error
+	authenticateFn  func(ctx context.Context, req domain.LoginRequest) (*domain.LoginResponse, error)
+	validateTokenFn func(ctx context.Context, token string) (*domain.AuthContext, error)
+	refreshTokenFn  func(ctx context.Context, req domain.RefreshRequest) (*domain.LoginResponse, error)
+	logoutFn        func(ctx context.Context, token string) error
 }
 
 func (m *mockAuthService) Authenticate(ctx context.Context, req domain.LoginRequest) (*domain.LoginResponse, error) {
@@ -60,11 +60,11 @@ func (m *mockAuthService) ChangePassword(ctx context.Context, userID string, req
 }
 
 type mockUserService struct {
-	setupFn   func(ctx context.Context, req driving.SetupRequest) (*driving.SetupResponse, error)
-	createFn  func(ctx context.Context, req driving.CreateUserRequest) (*domain.User, error)
-	getFn     func(ctx context.Context, id string) (*domain.User, error)
-	listFn    func(ctx context.Context) ([]*domain.User, error)
-	deleteFn  func(ctx context.Context, id string) error
+	setupFn  func(ctx context.Context, req driving.SetupRequest) (*driving.SetupResponse, error)
+	createFn func(ctx context.Context, req driving.CreateUserRequest) (*domain.User, error)
+	getFn    func(ctx context.Context, id string) (*domain.User, error)
+	listFn   func(ctx context.Context) ([]*domain.User, error)
+	deleteFn func(ctx context.Context, id string) error
 }
 
 func (m *mockUserService) Setup(ctx context.Context, req driving.SetupRequest) (*driving.SetupResponse, error) {
@@ -216,12 +216,12 @@ func (m *mockDocumentService) CountBySource(ctx context.Context, sourceID string
 }
 
 type mockSettingsService struct {
-	getFn                func(ctx context.Context) (*domain.Settings, error)
-	updateFn             func(ctx context.Context, updaterID string, req driving.UpdateSettingsRequest) (*domain.Settings, error)
-	getAISettingsFn      func(ctx context.Context) (*domain.AISettings, error)
-	updateAISettingsFn   func(ctx context.Context, req driving.UpdateAISettingsRequest) (*driving.AISettingsStatus, error)
-	getAIStatusFn        func(ctx context.Context) (*driving.AISettingsStatus, error)
-	testConnectionFn     func(ctx context.Context) error
+	getFn              func(ctx context.Context) (*domain.Settings, error)
+	updateFn           func(ctx context.Context, updaterID string, req driving.UpdateSettingsRequest) (*domain.Settings, error)
+	getAISettingsFn    func(ctx context.Context) (*domain.AISettings, error)
+	updateAISettingsFn func(ctx context.Context, req driving.UpdateAISettingsRequest) (*driving.AISettingsStatus, error)
+	getAIStatusFn      func(ctx context.Context) (*driving.AISettingsStatus, error)
+	testConnectionFn   func(ctx context.Context) error
 }
 
 func (m *mockSettingsService) Get(ctx context.Context) (*domain.Settings, error) {

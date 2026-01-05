@@ -25,11 +25,11 @@ func TestSyncState(t *testing.T) {
 	nextSync := now.Add(1 * time.Hour)
 
 	state := &SyncState{
-		SourceID:    "source-123",
-		Status:      SyncStatusCompleted,
-		LastSyncAt:  &now,
-		NextSyncAt:  &nextSync,
-		Cursor:      "cursor-abc123",
+		SourceID:   "source-123",
+		Status:     SyncStatusCompleted,
+		LastSyncAt: &now,
+		NextSyncAt: &nextSync,
+		Cursor:     "cursor-abc123",
 		Stats: SyncStats{
 			DocumentsAdded:   10,
 			DocumentsUpdated: 5,

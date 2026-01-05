@@ -6,10 +6,10 @@ import "time"
 type SyncStatus string
 
 const (
-	SyncStatusIdle       SyncStatus = "idle"
-	SyncStatusRunning    SyncStatus = "running"
-	SyncStatusCompleted  SyncStatus = "completed"
-	SyncStatusFailed     SyncStatus = "failed"
+	SyncStatusIdle      SyncStatus = "idle"
+	SyncStatusRunning   SyncStatus = "running"
+	SyncStatusCompleted SyncStatus = "completed"
+	SyncStatusFailed    SyncStatus = "failed"
 )
 
 // SyncState tracks the sync state for a source
@@ -54,10 +54,10 @@ type Change struct {
 
 // SyncResult represents the outcome of a sync operation
 type SyncResult struct {
-	SourceID  string    `json:"source_id"`
-	Success   bool      `json:"success"`
-	Stats     SyncStats `json:"stats"`
-	Error     string    `json:"error,omitempty"`
-	Duration  float64   `json:"duration_seconds"`
-	Cursor    string    `json:"cursor,omitempty"`
+	SourceID string    `json:"source_id"`
+	Success  bool      `json:"success"`
+	Stats    SyncStats `json:"stats"`
+	Error    string    `json:"error,omitempty"`
+	Duration float64   `json:"duration_seconds"`
+	Cursor   string    `json:"cursor,omitempty"`
 }

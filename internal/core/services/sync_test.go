@@ -709,7 +709,7 @@ func TestSyncSource_ProcessChangeError_Continues(t *testing.T) {
 	// First document has nil Document (will error), second is valid
 	connectorFactory.connector.FetchChangesFn = func(ctx context.Context, source *domain.Source, cursor string) ([]*domain.Change, string, error) {
 		return []*domain.Change{
-			{ExternalID: "ext-1", Type: domain.ChangeTypeAdded, Document: nil, Content: "Content"},                                       // Will fail
+			{ExternalID: "ext-1", Type: domain.ChangeTypeAdded, Document: nil, Content: "Content"},                                                     // Will fail
 			{ExternalID: "ext-2", Type: domain.ChangeTypeAdded, Document: &domain.Document{ExternalID: "ext-2", Title: "Valid"}, Content: "Content 2"}, // Should succeed
 		}, "", nil
 	}

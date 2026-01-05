@@ -245,17 +245,17 @@ func (d *Deployer) parseClusterInfo(pkg *driven.AppPackage) *domain.VespaCluster
 
 // XML structures for parsing services.xml
 type servicesXML struct {
-	XMLName    xml.Name         `xml:"services"`
-	Content    []contentXML     `xml:"content"`
-	Containers []containerXML   `xml:"container"`
+	XMLName    xml.Name       `xml:"services"`
+	Content    []contentXML   `xml:"content"`
+	Containers []containerXML `xml:"container"`
 }
 
 type contentXML struct {
-	ID         string       `xml:"id,attr"`
-	Redundancy string       `xml:"redundancy"`
-	MinRedundancy string    `xml:"min-redundancy"`
-	Documents  documentsXML `xml:"documents"`
-	Nodes      nodesXML     `xml:"nodes"`
+	ID            string       `xml:"id,attr"`
+	Redundancy    string       `xml:"redundancy"`
+	MinRedundancy string       `xml:"min-redundancy"`
+	Documents     documentsXML `xml:"documents"`
+	Nodes         nodesXML     `xml:"nodes"`
 }
 
 type documentsXML struct {
@@ -268,11 +268,11 @@ type documentXML struct {
 }
 
 type containerXML struct {
-	ID          string     `xml:"id,attr"`
-	DocumentAPI *struct{}  `xml:"document-api"`
-	Search      *struct{}  `xml:"search"`
-	HTTP        *httpXML   `xml:"http"`
-	Nodes       nodesXML   `xml:"nodes"`
+	ID          string    `xml:"id,attr"`
+	DocumentAPI *struct{} `xml:"document-api"`
+	Search      *struct{} `xml:"search"`
+	HTTP        *httpXML  `xml:"http"`
+	Nodes       nodesXML  `xml:"nodes"`
 }
 
 type httpXML struct {

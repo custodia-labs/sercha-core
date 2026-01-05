@@ -646,17 +646,17 @@ func (s *Server) handleGetAISettings(w http.ResponseWriter, r *http.Request) {
 	// Mask API keys for security
 	resp := aiSettingsResponse{
 		Embedding: aiProviderInfo{
-			Provider:    aiSettings.Embedding.Provider,
-			Model:       aiSettings.Embedding.Model,
-			BaseURL:     aiSettings.Embedding.BaseURL,
-			HasAPIKey:   aiSettings.Embedding.APIKey != "",
+			Provider:     aiSettings.Embedding.Provider,
+			Model:        aiSettings.Embedding.Model,
+			BaseURL:      aiSettings.Embedding.BaseURL,
+			HasAPIKey:    aiSettings.Embedding.APIKey != "",
 			IsConfigured: aiSettings.Embedding.IsConfigured(),
 		},
 		LLM: aiProviderInfo{
-			Provider:    aiSettings.LLM.Provider,
-			Model:       aiSettings.LLM.Model,
-			BaseURL:     aiSettings.LLM.BaseURL,
-			HasAPIKey:   aiSettings.LLM.APIKey != "",
+			Provider:     aiSettings.LLM.Provider,
+			Model:        aiSettings.LLM.Model,
+			BaseURL:      aiSettings.LLM.BaseURL,
+			HasAPIKey:    aiSettings.LLM.APIKey != "",
 			IsConfigured: aiSettings.LLM.IsConfigured(),
 		},
 	}

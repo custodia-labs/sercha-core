@@ -51,10 +51,13 @@ import (
 var version = "dev"
 
 func main() {
-	// Get run mode from environment (RUN_MODE) or command line arg
-	mode := getEnv("RUN_MODE", "all")
+	// Get run mode: environment variable takes precedence, command arg as fallback
+	mode := "all"
 	if len(os.Args) > 1 {
 		mode = os.Args[1]
+	}
+	if envMode := os.Getenv("RUN_MODE"); envMode != "" {
+		mode = envMode
 	}
 
 	log.Printf("sercha-core %s starting in %s mode", version, mode)

@@ -16,10 +16,10 @@ var _ driven.SessionStore = (*SessionStore)(nil)
 
 const (
 	// Key prefixes for Redis
-	sessionPrefix       = "session:"
-	sessionTokenPrefix  = "session:token:"
+	sessionPrefix        = "session:"
+	sessionTokenPrefix   = "session:token:"
 	sessionRefreshPrefix = "session:refresh:"
-	sessionUserPrefix   = "session:user:"
+	sessionUserPrefix    = "session:user:"
 )
 
 // SessionStore implements driven.SessionStore using Redis

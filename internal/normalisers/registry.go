@@ -265,19 +265,19 @@ func stripHTMLTags(content string) string {
 func decodeHTMLEntities(content string) string {
 	// Common HTML entities
 	replacements := map[string]string{
-		"&nbsp;":  " ",
-		"&amp;":   "&",
-		"&lt;":    "<",
-		"&gt;":    ">",
-		"&quot;":  "\"",
-		"&apos;":  "'",
-		"&#39;":   "'",
-		"&mdash;": "—",
-		"&ndash;": "–",
+		"&nbsp;":   " ",
+		"&amp;":    "&",
+		"&lt;":     "<",
+		"&gt;":     ">",
+		"&quot;":   "\"",
+		"&apos;":   "'",
+		"&#39;":    "'",
+		"&mdash;":  "—",
+		"&ndash;":  "–",
 		"&hellip;": "...",
-		"&copy;":  "©",
-		"&reg;":   "®",
-		"&trade;": "™",
+		"&copy;":   "©",
+		"&reg;":    "®",
+		"&trade;":  "™",
 	}
 
 	for entity, replacement := range replacements {

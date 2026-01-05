@@ -9,8 +9,8 @@ import (
 
 // MockUserStore is a mock implementation of UserStore for testing
 type MockUserStore struct {
-	mu    sync.RWMutex
-	users map[string]*domain.User
+	mu      sync.RWMutex
+	users   map[string]*domain.User
 	byEmail map[string]*domain.User
 }
 

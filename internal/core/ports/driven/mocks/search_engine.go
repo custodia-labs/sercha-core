@@ -10,9 +10,9 @@ import (
 
 // MockSearchEngine is a mock implementation of SearchEngine for testing
 type MockSearchEngine struct {
-	mu     sync.RWMutex
-	chunks map[string]*domain.Chunk
-	byDoc  map[string][]*domain.Chunk
+	mu       sync.RWMutex
+	chunks   map[string]*domain.Chunk
+	byDoc    map[string][]*domain.Chunk
 	bySource map[string][]*domain.Chunk
 }
 
@@ -61,8 +61,8 @@ func (m *MockSearchEngine) Search(ctx context.Context, query string, queryEmbedd
 		// Simple text matching for mock
 		if strings.Contains(strings.ToLower(chunk.Content), queryLower) {
 			results = append(results, &domain.RankedChunk{
-				Chunk: chunk,
-				Score: 1.0,
+				Chunk:      chunk,
+				Score:      1.0,
 				Highlights: []string{chunk.Content},
 			})
 		}

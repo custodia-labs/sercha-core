@@ -38,10 +38,10 @@ func (m *MockNormaliser) Priority() int {
 
 // MockNormaliserRegistry is a mock implementation of NormaliserRegistry for testing
 type MockNormaliserRegistry struct {
-	GetFn       func(mimeType string) driven.Normaliser
-	GetAllFn    func(mimeType string) []driven.Normaliser
-	RegisterFn  func(normaliser driven.Normaliser)
-	normaliser  driven.Normaliser
+	GetFn      func(mimeType string) driven.Normaliser
+	GetAllFn   func(mimeType string) []driven.Normaliser
+	RegisterFn func(normaliser driven.Normaliser)
+	normaliser driven.Normaliser
 }
 
 func NewMockNormaliserRegistry() *MockNormaliserRegistry {

@@ -136,8 +136,8 @@ func (m *mockLLMService) Close() error {
 func TestSettingsService_Get(t *testing.T) {
 	store := &mockSettingsStore{
 		settings: &domain.Settings{
-			TeamID:      "team-1",
-			AIProvider:  domain.AIProviderOpenAI,
+			TeamID:         "team-1",
+			AIProvider:     domain.AIProviderOpenAI,
 			ResultsPerPage: 20,
 		},
 	}
