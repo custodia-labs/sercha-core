@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -633,4 +634,272 @@ func TestMockSchedulerStoreInterface(t *testing.T) {
 
 func TestMockSchedulerTaskQueueInterface(t *testing.T) {
 	var _ driven.TaskQueue = (*mockSchedulerTaskQueue)(nil)
+}
+
+// mockDistributedLock for scheduler lock tests
+type mockDistributedLock struct {
+	acquireFn func(name string, ttl time.Duration) (bool, error)
+	releaseFn func(name string) error
+	extendFn  func(name string, ttl time.Duration) error
+	pingFn    func() error
+}
+
+func (m *mockDistributedLock) Acquire(ctx context.Context, name string, ttl time.Duration) (bool, error) {
+	if m.acquireFn != nil {
+		return m.acquireFn(name, ttl)
+	}
+	return true, nil
+}
+
+func (m *mockDistributedLock) Release(ctx context.Context, name string) error {
+	if m.releaseFn != nil {
+		return m.releaseFn(name)
+	}
+	return nil
+}
+
+func (m *mockDistributedLock) Extend(ctx context.Context, name string, ttl time.Duration) error {
+	if m.extendFn != nil {
+		return m.extendFn(name, ttl)
+	}
+	return nil
+}
+
+func (m *mockDistributedLock) Ping(ctx context.Context) error {
+	if m.pingFn != nil {
+		return m.pingFn()
+	}
+	return nil
+}
+
+func TestNewScheduler_WithLock(t *testing.T) {
+	store := newMockSchedulerStore()
+	queue := newMockSchedulerTaskQueue()
+	lock := &mockDistributedLock{}
+
+	s := NewScheduler(SchedulerConfig{
+		Store:     store,
+		TaskQueue: queue,
+		Lock:      lock,
+		LockTTL:   2 * time.Minute,
+	})
+
+	if s.lock == nil {
+		t.Error("expected lock to be set")
+	}
+	if s.lockTTL != 2*time.Minute {
+		t.Errorf("expected lock TTL 2m, got %v", s.lockTTL)
+	}
+	// LockRequired should default to true when lock is provided
+	if !s.lockRequired {
+		t.Error("expected lockRequired to default to true when lock is provided")
+	}
+}
+
+func TestNewScheduler_LockTTLDefault(t *testing.T) {
+	store := newMockSchedulerStore()
+	queue := newMockSchedulerTaskQueue()
+	lock := &mockDistributedLock{}
+
+	s := NewScheduler(SchedulerConfig{
+		Store:     store,
+		TaskQueue: queue,
+		Lock:      lock,
+		// LockTTL not set, should default to 60s
+	})
+
+	if s.lockTTL != 60*time.Second {
+		t.Errorf("expected default lock TTL 60s, got %v", s.lockTTL)
+	}
+}
+
+func TestScheduler_CheckAndEnqueue_LockAcquired(t *testing.T) {
+	store := newMockSchedulerStore()
+	queue := newMockSchedulerTaskQueue()
+
+	lockAcquired := false
+	lockReleased := false
+	lock := &mockDistributedLock{
+		acquireFn: func(name string, ttl time.Duration) (bool, error) {
+			lockAcquired = true
+			if name != "scheduler" {
+				t.Errorf("expected lock name 'scheduler', got %s", name)
+			}
+			return true, nil
+		},
+		releaseFn: func(name string) error {
+			lockReleased = true
+			return nil
+		},
+	}
+
+	s := NewScheduler(SchedulerConfig{
+		Store:     store,
+		TaskQueue: queue,
+		Lock:      lock,
+	})
+
+	ctx := context.Background()
+
+	// Create a due task
+	scheduled := domain.NewScheduledTask("s1", "Test", domain.TaskTypeSyncAll, "team-1", time.Hour)
+	scheduled.Enabled = true
+	scheduled.NextRun = time.Now().Add(-time.Minute)
+	_ = s.CreateScheduledTask(ctx, scheduled)
+
+	// Run check and enqueue
+	s.checkAndEnqueue(ctx)
+
+	if !lockAcquired {
+		t.Error("expected lock to be acquired")
+	}
+	if !lockReleased {
+		t.Error("expected lock to be released")
+	}
+
+	// Task should be enqueued
+	enqueued := queue.getEnqueuedTasks()
+	if len(enqueued) != 1 {
+		t.Errorf("expected 1 enqueued task, got %d", len(enqueued))
+	}
+}
+
+func TestScheduler_CheckAndEnqueue_LockNotAcquired(t *testing.T) {
+	store := newMockSchedulerStore()
+	queue := newMockSchedulerTaskQueue()
+
+	lock := &mockDistributedLock{
+		acquireFn: func(name string, ttl time.Duration) (bool, error) {
+			return false, nil // Lock held by another instance
+		},
+	}
+
+	s := NewScheduler(SchedulerConfig{
+		Store:     store,
+		TaskQueue: queue,
+		Lock:      lock,
+	})
+
+	ctx := context.Background()
+
+	// Create a due task
+	scheduled := domain.NewScheduledTask("s1", "Test", domain.TaskTypeSyncAll, "team-1", time.Hour)
+	scheduled.Enabled = true
+	scheduled.NextRun = time.Now().Add(-time.Minute)
+	_ = s.CreateScheduledTask(ctx, scheduled)
+
+	// Run check and enqueue
+	s.checkAndEnqueue(ctx)
+
+	// Task should NOT be enqueued (lock not acquired)
+	enqueued := queue.getEnqueuedTasks()
+	if len(enqueued) != 0 {
+		t.Errorf("expected 0 enqueued tasks (lock not acquired), got %d", len(enqueued))
+	}
+}
+
+func TestScheduler_CheckAndEnqueue_LockError_Required(t *testing.T) {
+	store := newMockSchedulerStore()
+	queue := newMockSchedulerTaskQueue()
+
+	lock := &mockDistributedLock{
+		acquireFn: func(name string, ttl time.Duration) (bool, error) {
+			return false, errors.New("redis unavailable")
+		},
+	}
+
+	s := NewScheduler(SchedulerConfig{
+		Store:        store,
+		TaskQueue:    queue,
+		Lock:         lock,
+		LockRequired: true,
+	})
+
+	ctx := context.Background()
+
+	// Create a due task
+	scheduled := domain.NewScheduledTask("s1", "Test", domain.TaskTypeSyncAll, "team-1", time.Hour)
+	scheduled.Enabled = true
+	scheduled.NextRun = time.Now().Add(-time.Minute)
+	_ = s.CreateScheduledTask(ctx, scheduled)
+
+	// Run check and enqueue
+	s.checkAndEnqueue(ctx)
+
+	// Task should NOT be enqueued (lock required and error occurred)
+	enqueued := queue.getEnqueuedTasks()
+	if len(enqueued) != 0 {
+		t.Errorf("expected 0 enqueued tasks (lock error + required), got %d", len(enqueued))
+	}
+}
+
+func TestScheduler_CheckAndEnqueue_LockError_NotRequired(t *testing.T) {
+	store := newMockSchedulerStore()
+	queue := newMockSchedulerTaskQueue()
+
+	lock := &mockDistributedLock{
+		acquireFn: func(name string, ttl time.Duration) (bool, error) {
+			return false, errors.New("redis unavailable")
+		},
+	}
+
+	// Create scheduler with lock but explicitly set LockRequired to false
+	s := &Scheduler{
+		store:        store,
+		taskQueue:    queue,
+		lock:         lock,
+		logger:       slog.Default(),
+		lockTTL:      60 * time.Second,
+		lockRequired: false, // Explicitly not required
+		interval:     30 * time.Second,
+	}
+
+	ctx := context.Background()
+
+	// Create a due task
+	scheduled := domain.NewScheduledTask("s1", "Test", domain.TaskTypeSyncAll, "team-1", time.Hour)
+	scheduled.Enabled = true
+	scheduled.NextRun = time.Now().Add(-time.Minute)
+	_ = store.SaveScheduledTask(ctx, scheduled)
+
+	// Run check and enqueue
+	s.checkAndEnqueue(ctx)
+
+	// Task SHOULD be enqueued (lock error but not required)
+	enqueued := queue.getEnqueuedTasks()
+	if len(enqueued) != 1 {
+		t.Errorf("expected 1 enqueued task (lock not required), got %d", len(enqueued))
+	}
+}
+
+func TestScheduler_CheckAndEnqueue_NoLock(t *testing.T) {
+	store := newMockSchedulerStore()
+	queue := newMockSchedulerTaskQueue()
+
+	// No lock configured - backward compatible behavior
+	s := NewScheduler(SchedulerConfig{
+		Store:     store,
+		TaskQueue: queue,
+	})
+
+	ctx := context.Background()
+
+	// Create a due task
+	scheduled := domain.NewScheduledTask("s1", "Test", domain.TaskTypeSyncAll, "team-1", time.Hour)
+	scheduled.Enabled = true
+	scheduled.NextRun = time.Now().Add(-time.Minute)
+	_ = s.CreateScheduledTask(ctx, scheduled)
+
+	// Run check and enqueue
+	s.checkAndEnqueue(ctx)
+
+	// Task should be enqueued (no lock = no coordination needed)
+	enqueued := queue.getEnqueuedTasks()
+	if len(enqueued) != 1 {
+		t.Errorf("expected 1 enqueued task (no lock), got %d", len(enqueued))
+	}
+}
+
+func TestMockDistributedLockInterface(t *testing.T) {
+	var _ driven.DistributedLock = (*mockDistributedLock)(nil)
 }

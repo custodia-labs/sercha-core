@@ -1,0 +1,169 @@
+# Split Architecture Test Configuration
+# Tests: 2 API instances + 2 Worker instances with distributed locking
+# Run with: docker compose -f docker-compose.split.yml up --build
+
+services:
+  # PostgreSQL - Required for all modes
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sercha
+      POSTGRES_PASSWORD: sercha_dev
+      POSTGRES_DB: sercha
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sercha -d sercha"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis - Used for task queue, sessions, and distributed locking
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Vespa - Search engine
+  vespa:
+    image: vespaengine/vespa:8
+    ports:
+      - "8080:8080"
+      - "19071:19071"
+    volumes:
+      - vespa_data:/opt/vespa/var
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:19071/state/v1/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 60s
+
+  # ===== API Instances (N=2) =====
+  # Stateless HTTP servers, can scale horizontally
+
+  sercha-api-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["api"]
+    environment:
+      PORT: 8081
+      DATABASE_URL: postgres://sercha:sercha_dev@postgres:5432/sercha?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      VESPA_URL: http://vespa:19071
+      JWT_SECRET: dev-secret-change-in-production
+      TEAM_ID: dev-team
+      DB_MAX_OPEN_CONNS: 10
+      DB_MAX_IDLE_CONNS: 3
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  sercha-api-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["api"]
+    environment:
+      PORT: 8081
+      DATABASE_URL: postgres://sercha:sercha_dev@postgres:5432/sercha?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      VESPA_URL: http://vespa:19071
+      JWT_SECRET: dev-secret-change-in-production
+      TEAM_ID: dev-team
+      DB_MAX_OPEN_CONNS: 10
+      DB_MAX_IDLE_CONNS: 3
+    ports:
+      - "8082:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ===== Worker Instances (M=2) =====
+  # Both workers compete for scheduler lock - only one schedules per cycle
+  # Both process tasks from the queue concurrently
+
+  sercha-worker-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["worker"]
+    environment:
+      DATABASE_URL: postgres://sercha:sercha_dev@postgres:5432/sercha?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      VESPA_URL: http://vespa:19071
+      JWT_SECRET: dev-secret-change-in-production
+      TEAM_ID: dev-team
+      WORKER_CONCURRENCY: 2
+      WORKER_DEQUEUE_TIMEOUT: 5
+      SCHEDULER_ENABLED: "true"
+      SCHEDULER_LOCK_REQUIRED: "true"
+      DB_MAX_OPEN_CONNS: 10
+      DB_MAX_IDLE_CONNS: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  sercha-worker-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["worker"]
+    environment:
+      DATABASE_URL: postgres://sercha:sercha_dev@postgres:5432/sercha?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      VESPA_URL: http://vespa:19071
+      JWT_SECRET: dev-secret-change-in-production
+      TEAM_ID: dev-team
+      WORKER_CONCURRENCY: 2
+      WORKER_DEQUEUE_TIMEOUT: 5
+      SCHEDULER_ENABLED: "true"
+      SCHEDULER_LOCK_REQUIRED: "true"
+      DB_MAX_OPEN_CONNS: 10
+      DB_MAX_IDLE_CONNS: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ===== Load Balancer (Optional) =====
+  # Simple nginx to round-robin between API instances
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.split.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - sercha-api-1
+      - sercha-api-2
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  vespa_data:

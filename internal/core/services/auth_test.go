@@ -137,18 +137,327 @@ func TestAuthService_Authenticate_InactiveUser(t *testing.T) {
 }
 
 func TestAuthService_ValidateToken(t *testing.T) {
-	_, _, _, svc := newTestAuthService()
+	userStore, sessionStore, authAdapter, svc := newTestAuthService()
 
-	// Empty token
-	_, err := svc.ValidateToken(context.Background(), "")
-	if err != domain.ErrTokenInvalid {
-		t.Errorf("expected ErrTokenInvalid for empty token, got %v", err)
+	tests := []struct {
+		name           string
+		setupFunc      func(ctx context.Context) string
+		wantErr        error
+		validateResult func(t *testing.T, authCtx *domain.AuthContext)
+	}{
+		{
+			name: "empty token",
+			setupFunc: func(ctx context.Context) string {
+				return ""
+			},
+			wantErr: domain.ErrTokenInvalid,
+		},
+		{
+			name: "invalid token format",
+			setupFunc: func(ctx context.Context) string {
+				return "invalid-token"
+			},
+			wantErr: domain.ErrTokenInvalid,
+		},
+		{
+			name: "malformed base64 token",
+			setupFunc: func(ctx context.Context) string {
+				return "not!valid@base64#"
+			},
+			wantErr: domain.ErrTokenInvalid,
+		},
+		{
+			name: "expired token",
+			setupFunc: func(ctx context.Context) string {
+				// Create a token with expiration in the past
+				claims := &domain.TokenClaims{
+					UserID:    "user-123",
+					Email:     "test@example.com",
+					Role:      domain.RoleMember,
+					TeamID:    "team-123",
+					SessionID: "session-123",
+					IssuedAt:  time.Now().Add(-2 * time.Hour).Unix(),
+					ExpiresAt: time.Now().Add(-1 * time.Hour).Unix(), // Expired 1 hour ago
+				}
+				token, _ := authAdapter.GenerateToken(claims)
+				return token
+			},
+			wantErr: domain.ErrTokenExpired,
+		},
+		{
+			name: "session not found",
+			setupFunc: func(ctx context.Context) string {
+				// Create a valid token but don't create corresponding session
+				claims := &domain.TokenClaims{
+					UserID:    "user-123",
+					Email:     "test@example.com",
+					Role:      domain.RoleMember,
+					TeamID:    "team-123",
+					SessionID: "non-existent-session",
+					IssuedAt:  time.Now().Unix(),
+					ExpiresAt: time.Now().Add(time.Hour).Unix(),
+				}
+				token, _ := authAdapter.GenerateToken(claims)
+				return token
+			},
+			wantErr: domain.ErrSessionNotFound,
+		},
+		{
+			name: "session expired",
+			setupFunc: func(ctx context.Context) string {
+				// Create a valid token with valid expiration
+				claims := &domain.TokenClaims{
+					UserID:    "user-456",
+					Email:     "test2@example.com",
+					Role:      domain.RoleMember,
+					TeamID:    "team-123",
+					SessionID: "session-expired",
+					IssuedAt:  time.Now().Unix(),
+					ExpiresAt: time.Now().Add(time.Hour).Unix(),
+				}
+				token, _ := authAdapter.GenerateToken(claims)
+
+				// Create session that is expired
+				session := &domain.Session{
+					ID:        "session-expired",
+					UserID:    "user-456",
+					Token:     token,
+					ExpiresAt: time.Now().Add(-1 * time.Minute), // Expired 1 minute ago
+					CreatedAt: time.Now().Add(-2 * time.Hour),
+				}
+				_ = sessionStore.Save(ctx, session)
+				return token
+			},
+			wantErr: domain.ErrTokenExpired,
+		},
+		{
+			name: "successful validation",
+			setupFunc: func(ctx context.Context) string {
+				// Create user
+				user := &domain.User{
+					ID:     "user-789",
+					Email:  "valid@example.com",
+					Name:   "Valid User",
+					Role:   domain.RoleMember,
+					TeamID: "team-789",
+					Active: true,
+				}
+				_ = userStore.Save(ctx, user)
+
+				// Create valid token
+				claims := &domain.TokenClaims{
+					UserID:    "user-789",
+					Email:     "valid@example.com",
+					Role:      domain.RoleMember,
+					TeamID:    "team-789",
+					SessionID: "session-valid",
+					IssuedAt:  time.Now().Unix(),
+					ExpiresAt: time.Now().Add(time.Hour).Unix(),
+				}
+				token, _ := authAdapter.GenerateToken(claims)
+
+				// Create valid session
+				session := &domain.Session{
+					ID:        "session-valid",
+					UserID:    "user-789",
+					Token:     token,
+					ExpiresAt: time.Now().Add(time.Hour),
+					CreatedAt: time.Now(),
+				}
+				_ = sessionStore.Save(ctx, session)
+				return token
+			},
+			wantErr: nil,
+			validateResult: func(t *testing.T, authCtx *domain.AuthContext) {
+				if authCtx == nil {
+					t.Fatal("expected non-nil auth context")
+				}
+				if authCtx.UserID != "user-789" {
+					t.Errorf("expected UserID 'user-789', got '%s'", authCtx.UserID)
+				}
+				if authCtx.Email != "valid@example.com" {
+					t.Errorf("expected Email 'valid@example.com', got '%s'", authCtx.Email)
+				}
+				if authCtx.Role != domain.RoleMember {
+					t.Errorf("expected Role 'member', got '%s'", authCtx.Role)
+				}
+				if authCtx.TeamID != "team-789" {
+					t.Errorf("expected TeamID 'team-789', got '%s'", authCtx.TeamID)
+				}
+				if authCtx.SessionID != "session-valid" {
+					t.Errorf("expected SessionID 'session-valid', got '%s'", authCtx.SessionID)
+				}
+			},
+		},
+		{
+			name: "successful validation with admin role",
+			setupFunc: func(ctx context.Context) string {
+				// Create admin user
+				user := &domain.User{
+					ID:     "admin-123",
+					Email:  "admin@example.com",
+					Name:   "Admin User",
+					Role:   domain.RoleAdmin,
+					TeamID: "team-admin",
+					Active: true,
+				}
+				_ = userStore.Save(ctx, user)
+
+				// Create valid token with admin role
+				claims := &domain.TokenClaims{
+					UserID:    "admin-123",
+					Email:     "admin@example.com",
+					Role:      domain.RoleAdmin,
+					TeamID:    "team-admin",
+					SessionID: "session-admin",
+					IssuedAt:  time.Now().Unix(),
+					ExpiresAt: time.Now().Add(time.Hour).Unix(),
+				}
+				token, _ := authAdapter.GenerateToken(claims)
+
+				// Create valid session
+				session := &domain.Session{
+					ID:        "session-admin",
+					UserID:    "admin-123",
+					Token:     token,
+					ExpiresAt: time.Now().Add(time.Hour),
+					CreatedAt: time.Now(),
+				}
+				_ = sessionStore.Save(ctx, session)
+				return token
+			},
+			wantErr: nil,
+			validateResult: func(t *testing.T, authCtx *domain.AuthContext) {
+				if authCtx == nil {
+					t.Fatal("expected non-nil auth context")
+				}
+				if authCtx.Role != domain.RoleAdmin {
+					t.Errorf("expected Role 'admin', got '%s'", authCtx.Role)
+				}
+				if !authCtx.IsAdmin() {
+					t.Error("expected IsAdmin() to return true")
+				}
+			},
+		},
+		{
+			name: "token about to expire but still valid",
+			setupFunc: func(ctx context.Context) string {
+				// Create token that expires in 1 second (still valid)
+				claims := &domain.TokenClaims{
+					UserID:    "user-expiring",
+					Email:     "expiring@example.com",
+					Role:      domain.RoleMember,
+					TeamID:    "team-123",
+					SessionID: "session-expiring",
+					IssuedAt:  time.Now().Unix(),
+					ExpiresAt: time.Now().Add(1 * time.Second).Unix(),
+				}
+				token, _ := authAdapter.GenerateToken(claims)
+
+				// Create valid session
+				session := &domain.Session{
+					ID:        "session-expiring",
+					UserID:    "user-expiring",
+					Token:     token,
+					ExpiresAt: time.Now().Add(1 * time.Second),
+					CreatedAt: time.Now(),
+				}
+				_ = sessionStore.Save(ctx, session)
+				return token
+			},
+			wantErr: nil,
+			validateResult: func(t *testing.T, authCtx *domain.AuthContext) {
+				if authCtx == nil {
+					t.Fatal("expected non-nil auth context")
+				}
+				if authCtx.SessionID != "session-expiring" {
+					t.Errorf("expected SessionID 'session-expiring', got '%s'", authCtx.SessionID)
+				}
+			},
+		},
+		{
+			name: "token expired by exactly one second",
+			setupFunc: func(ctx context.Context) string {
+				// Create token that expired exactly 1 second ago
+				claims := &domain.TokenClaims{
+					UserID:    "user-justexpired",
+					Email:     "justexpired@example.com",
+					Role:      domain.RoleMember,
+					TeamID:    "team-123",
+					SessionID: "session-justexpired",
+					IssuedAt:  time.Now().Add(-2 * time.Second).Unix(),
+					ExpiresAt: time.Now().Add(-1 * time.Second).Unix(),
+				}
+				token, _ := authAdapter.GenerateToken(claims)
+				return token
+			},
+			wantErr: domain.ErrTokenExpired,
+		},
+		{
+			name: "session with additional metadata",
+			setupFunc: func(ctx context.Context) string {
+				// Create valid token
+				claims := &domain.TokenClaims{
+					UserID:    "user-metadata",
+					Email:     "metadata@example.com",
+					Role:      domain.RoleMember,
+					TeamID:    "team-123",
+					SessionID: "session-metadata",
+					IssuedAt:  time.Now().Unix(),
+					ExpiresAt: time.Now().Add(time.Hour).Unix(),
+				}
+				token, _ := authAdapter.GenerateToken(claims)
+
+				// Create session with additional metadata
+				session := &domain.Session{
+					ID:        "session-metadata",
+					UserID:    "user-metadata",
+					Token:     token,
+					ExpiresAt: time.Now().Add(time.Hour),
+					CreatedAt: time.Now(),
+					UserAgent: "Mozilla/5.0",
+					IPAddress: "192.168.1.1",
+				}
+				_ = sessionStore.Save(ctx, session)
+				return token
+			},
+			wantErr: nil,
+			validateResult: func(t *testing.T, authCtx *domain.AuthContext) {
+				if authCtx == nil {
+					t.Fatal("expected non-nil auth context")
+				}
+				if authCtx.UserID != "user-metadata" {
+					t.Errorf("expected UserID 'user-metadata', got '%s'", authCtx.UserID)
+				}
+			},
+		},
 	}
 
-	// Invalid token format
-	_, err = svc.ValidateToken(context.Background(), "invalid-token")
-	if err != domain.ErrTokenInvalid {
-		t.Errorf("expected ErrTokenInvalid for invalid token, got %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			token := tt.setupFunc(ctx)
+
+			authCtx, err := svc.ValidateToken(ctx, token)
+
+			if tt.wantErr != nil {
+				if err != tt.wantErr {
+					t.Errorf("expected error %v, got %v", tt.wantErr, err)
+				}
+				if authCtx != nil {
+					t.Error("expected nil auth context on error")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if tt.validateResult != nil {
+				tt.validateResult(t, authCtx)
+			}
+		})
 	}
 }
 

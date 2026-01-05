@@ -12,9 +12,13 @@ import (
 
 // Scheduler manages periodic task scheduling.
 // It runs on worker nodes and enqueues tasks based on schedules.
+//
+// For multi-worker deployments, configure a DistributedLock to prevent
+// duplicate task enqueuing across instances.
 type Scheduler struct {
 	store     driven.SchedulerStore
 	taskQueue driven.TaskQueue
+	lock      driven.DistributedLock
 	logger    *slog.Logger
 
 	// Internal state
@@ -23,14 +27,21 @@ type Scheduler struct {
 	stopCh   chan struct{}
 	doneCh   chan struct{}
 	interval time.Duration
+
+	// Lock configuration
+	lockTTL      time.Duration
+	lockRequired bool
 }
 
 // SchedulerConfig holds configuration for the scheduler.
 type SchedulerConfig struct {
 	Store        driven.SchedulerStore
 	TaskQueue    driven.TaskQueue
+	Lock         driven.DistributedLock // Optional: distributed lock for multi-instance coordination
 	Logger       *slog.Logger
-	PollInterval time.Duration // How often to check for due tasks
+	PollInterval time.Duration // How often to check for due tasks (default: 30s)
+	LockTTL      time.Duration // TTL for the distributed lock (default: 60s)
+	LockRequired bool          // If true, skip scheduling when lock cannot be acquired (default: true)
 }
 
 // NewScheduler creates a new scheduler.
@@ -45,11 +56,27 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 		interval = 30 * time.Second
 	}
 
+	lockTTL := cfg.LockTTL
+	if lockTTL == 0 {
+		lockTTL = 60 * time.Second // Default: 2x poll interval
+	}
+
+	// Default to requiring lock if one is provided
+	lockRequired := cfg.LockRequired
+	if cfg.Lock != nil && !cfg.LockRequired {
+		// If lock is provided but LockRequired not explicitly set,
+		// we still default to true for safety
+		lockRequired = true
+	}
+
 	return &Scheduler{
-		store:     cfg.Store,
-		taskQueue: cfg.TaskQueue,
-		logger:    logger,
-		interval:  interval,
+		store:        cfg.Store,
+		taskQueue:    cfg.TaskQueue,
+		lock:         cfg.Lock,
+		logger:       logger,
+		interval:     interval,
+		lockTTL:      lockTTL,
+		lockRequired: lockRequired,
 	}
 }
 
@@ -117,7 +144,31 @@ func (s *Scheduler) run(ctx context.Context) {
 }
 
 // checkAndEnqueue checks for due scheduled tasks and enqueues them.
+// If a distributed lock is configured, it acquires the lock before polling
+// to prevent duplicate task enqueuing across multiple scheduler instances.
 func (s *Scheduler) checkAndEnqueue(ctx context.Context) {
+	// Attempt to acquire distributed lock if configured
+	if s.lock != nil {
+		acquired, err := s.lock.Acquire(ctx, "scheduler", s.lockTTL)
+		if err != nil {
+			s.logger.Warn("failed to acquire scheduler lock", "error", err)
+			if s.lockRequired {
+				return // Skip this cycle
+			}
+			// Fall through if lock not required (single-instance mode)
+		} else if !acquired {
+			s.logger.Debug("scheduler lock held by another instance, skipping cycle")
+			return
+		} else {
+			// Lock acquired, release when done
+			defer func() {
+				if err := s.lock.Release(ctx, "scheduler"); err != nil {
+					s.logger.Warn("failed to release scheduler lock", "error", err)
+				}
+			}()
+		}
+	}
+
 	tasks, err := s.store.GetDueScheduledTasks(ctx)
 	if err != nil {
 		s.logger.Error("failed to get due scheduled tasks", "error", err)

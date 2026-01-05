@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -196,5 +197,289 @@ func TestResponseWriter(t *testing.T) {
 	rw.WriteHeader(http.StatusNotFound)
 	if rw.statusCode != http.StatusNotFound {
 		t.Errorf("expected status 404, got %d", rw.statusCode)
+	}
+}
+
+func TestAuthMiddleware_Authenticate_MissingToken(t *testing.T) {
+	mockAuth := &mockAuthService{}
+	middleware := NewAuthMiddleware(mockAuth)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	rr := httptest.NewRecorder()
+
+	middleware.Authenticate(handler).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", rr.Code)
+	}
+}
+
+func TestAuthMiddleware_Authenticate_Success(t *testing.T) {
+	mockAuth := &mockAuthService{
+		validateTokenFn: func(ctx context.Context, token string) (*domain.AuthContext, error) {
+			if token == "valid-token" {
+				return &domain.AuthContext{
+					UserID: "user-1",
+					Email:  "test@example.com",
+					Role:   domain.RoleAdmin,
+				}, nil
+			}
+			return nil, domain.ErrUnauthorized
+		},
+	}
+	middleware := NewAuthMiddleware(mockAuth)
+
+	handlerCalled := false
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		authCtx := GetAuthContext(r.Context())
+		if authCtx == nil {
+			t.Error("expected auth context to be set")
+			return
+		}
+		if authCtx.UserID != "user-1" {
+			t.Errorf("expected user ID 'user-1', got %s", authCtx.UserID)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer valid-token")
+	rr := httptest.NewRecorder()
+
+	middleware.Authenticate(handler).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rr.Code)
+	}
+	if !handlerCalled {
+		t.Error("expected handler to be called")
+	}
+}
+
+func TestAuthMiddleware_Authenticate_TokenExpired(t *testing.T) {
+	mockAuth := &mockAuthService{
+		validateTokenFn: func(ctx context.Context, token string) (*domain.AuthContext, error) {
+			return nil, domain.ErrTokenExpired
+		},
+	}
+	middleware := NewAuthMiddleware(mockAuth)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called")
+	})
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer expired-token")
+	rr := httptest.NewRecorder()
+
+	middleware.Authenticate(handler).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", rr.Code)
+	}
+}
+
+func TestAuthMiddleware_Authenticate_SessionNotFound(t *testing.T) {
+	mockAuth := &mockAuthService{
+		validateTokenFn: func(ctx context.Context, token string) (*domain.AuthContext, error) {
+			return nil, domain.ErrSessionNotFound
+		},
+	}
+	middleware := NewAuthMiddleware(mockAuth)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called")
+	})
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer invalid-session")
+	rr := httptest.NewRecorder()
+
+	middleware.Authenticate(handler).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", rr.Code)
+	}
+}
+
+func TestAuthMiddleware_Authenticate_InvalidToken(t *testing.T) {
+	mockAuth := &mockAuthService{
+		validateTokenFn: func(ctx context.Context, token string) (*domain.AuthContext, error) {
+			return nil, errors.New("invalid token")
+		},
+	}
+	middleware := NewAuthMiddleware(mockAuth)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called")
+	})
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer bad-token")
+	rr := httptest.NewRecorder()
+
+	middleware.Authenticate(handler).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", rr.Code)
+	}
+}
+
+func TestAuthMiddleware_RequireAdmin_Success(t *testing.T) {
+	mockAuth := &mockAuthService{}
+	middleware := NewAuthMiddleware(mockAuth)
+
+	handlerCalled := false
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	authCtx := &domain.AuthContext{
+		UserID: "user-1",
+		Email:  "admin@example.com",
+		Role:   domain.RoleAdmin,
+	}
+	ctx := context.WithValue(req.Context(), authContextKey, authCtx)
+	req = req.WithContext(ctx)
+	rr := httptest.NewRecorder()
+
+	middleware.RequireAdmin(handler).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rr.Code)
+	}
+	if !handlerCalled {
+		t.Error("expected handler to be called")
+	}
+}
+
+func TestAuthMiddleware_RequireAdmin_NotAdmin(t *testing.T) {
+	mockAuth := &mockAuthService{}
+	middleware := NewAuthMiddleware(mockAuth)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called")
+	})
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	authCtx := &domain.AuthContext{
+		UserID: "user-1",
+		Email:  "member@example.com",
+		Role:   domain.RoleMember,
+	}
+	ctx := context.WithValue(req.Context(), authContextKey, authCtx)
+	req = req.WithContext(ctx)
+	rr := httptest.NewRecorder()
+
+	middleware.RequireAdmin(handler).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("expected status 403, got %d", rr.Code)
+	}
+}
+
+func TestAuthMiddleware_RequireAdmin_NoContext(t *testing.T) {
+	mockAuth := &mockAuthService{}
+	middleware := NewAuthMiddleware(mockAuth)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called")
+	})
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	rr := httptest.NewRecorder()
+
+	middleware.RequireAdmin(handler).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", rr.Code)
+	}
+}
+
+func TestAuthMiddleware_RequireRole_Success(t *testing.T) {
+	mockAuth := &mockAuthService{}
+	middleware := NewAuthMiddleware(mockAuth)
+
+	handlerCalled := false
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	authCtx := &domain.AuthContext{
+		UserID: "user-1",
+		Email:  "member@example.com",
+		Role:   domain.RoleMember,
+	}
+	ctx := context.WithValue(req.Context(), authContextKey, authCtx)
+	req = req.WithContext(ctx)
+	rr := httptest.NewRecorder()
+
+	middleware.RequireRole(domain.RoleAdmin, domain.RoleMember)(handler).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rr.Code)
+	}
+	if !handlerCalled {
+		t.Error("expected handler to be called")
+	}
+}
+
+func TestAuthMiddleware_RequireRole_InsufficientPermissions(t *testing.T) {
+	mockAuth := &mockAuthService{}
+	middleware := NewAuthMiddleware(mockAuth)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called")
+	})
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	authCtx := &domain.AuthContext{
+		UserID: "user-1",
+		Email:  "viewer@example.com",
+		Role:   domain.RoleViewer,
+	}
+	ctx := context.WithValue(req.Context(), authContextKey, authCtx)
+	req = req.WithContext(ctx)
+	rr := httptest.NewRecorder()
+
+	middleware.RequireRole(domain.RoleAdmin, domain.RoleMember)(handler).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("expected status 403, got %d", rr.Code)
+	}
+}
+
+func TestAuthMiddleware_RequireRole_NoContext(t *testing.T) {
+	mockAuth := &mockAuthService{}
+	middleware := NewAuthMiddleware(mockAuth)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called")
+	})
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	rr := httptest.NewRecorder()
+
+	middleware.RequireRole(domain.RoleAdmin)(handler).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", rr.Code)
+	}
+}
+
+func TestGetAuthContext_EmptyContext(t *testing.T) {
+	// Test with empty context (no auth context set)
+	result := GetAuthContext(context.Background())
+	if result != nil {
+		t.Error("expected nil for context without auth data")
 	}
 }

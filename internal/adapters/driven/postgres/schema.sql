@@ -157,3 +157,29 @@ CREATE TABLE IF NOT EXISTS vespa_config (
     connected_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Tasks table (task queue for background processing)
+-- Used as fallback when Redis is unavailable
+CREATE TABLE IF NOT EXISTS tasks (
+    id VARCHAR(36) PRIMARY KEY,
+    type VARCHAR(50) NOT NULL,
+    team_id VARCHAR(36) NOT NULL,
+    payload JSONB DEFAULT '{}',
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    priority INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    error TEXT DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    scheduled_for TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Index for efficient dequeue (pending tasks ordered by priority and schedule)
+CREATE INDEX IF NOT EXISTS idx_tasks_dequeue
+    ON tasks (status, scheduled_for, priority DESC, created_at)
+    WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_tasks_team_id ON tasks(team_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);

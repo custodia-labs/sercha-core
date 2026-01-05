@@ -27,12 +27,14 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/custodia-labs/sercha-core/internal/adapters/driven/ai"
 	"github.com/custodia-labs/sercha-core/internal/adapters/driven/auth"
 	"github.com/custodia-labs/sercha-core/internal/adapters/driven/postgres"
+	postgresqueue "github.com/custodia-labs/sercha-core/internal/adapters/driven/queue/postgres"
 	redisqueue "github.com/custodia-labs/sercha-core/internal/adapters/driven/queue/redis"
-	redissession "github.com/custodia-labs/sercha-core/internal/adapters/driven/redis"
+	redisadapter "github.com/custodia-labs/sercha-core/internal/adapters/driven/redis"
 	"github.com/custodia-labs/sercha-core/internal/adapters/driven/vespa"
 	"github.com/custodia-labs/sercha-core/internal/adapters/driving/http"
 	"github.com/custodia-labs/sercha-core/internal/core/domain"
@@ -80,7 +82,14 @@ func main() {
 
 	// ===== Initialize PostgreSQL =====
 	log.Println("Connecting to PostgreSQL...")
-	db, err := postgres.Connect(ctx, postgres.DefaultConfig(databaseURL))
+	dbConfig := postgres.Config{
+		URL:             databaseURL,
+		MaxOpenConns:    getEnvInt("DB_MAX_OPEN_CONNS", 25),
+		MaxIdleConns:    getEnvInt("DB_MAX_IDLE_CONNS", 5),
+		ConnMaxLifetime: time.Duration(getEnvInt("DB_CONN_MAX_LIFETIME_SEC", 300)) * time.Second,
+		ConnMaxIdleTime: time.Duration(getEnvInt("DB_CONN_MAX_IDLE_SEC", 60)) * time.Second,
+	}
+	db, err := postgres.Connect(ctx, dbConfig)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -137,7 +146,7 @@ func main() {
 	// ===== Session Store (Redis if available, otherwise PostgreSQL) =====
 	var sessionStore driven.SessionStore
 	if redisClient != nil {
-		sessionStore = redissession.NewSessionStore(redisClient)
+		sessionStore = redisadapter.NewSessionStore(redisClient)
 		log.Println("Using Redis session store")
 	} else {
 		sessionStore = postgres.NewSessionStore(db)
@@ -154,8 +163,18 @@ func main() {
 		}
 		log.Println("Using Redis task queue")
 	} else {
-		// TODO: Use postgres queue as fallback
-		log.Println("Warning: No Redis URL provided, task queue disabled")
+		taskQueue = postgresqueue.NewQueue(db.DB)
+		log.Println("Using PostgreSQL task queue")
+	}
+
+	// ===== Distributed Lock (Redis if available, otherwise PostgreSQL advisory locks) =====
+	var distributedLock driven.DistributedLock
+	if redisClient != nil {
+		distributedLock = redisadapter.NewLock(redisClient)
+		log.Println("Using Redis distributed lock")
+	} else {
+		distributedLock = postgres.NewAdvisoryLock(db)
+		log.Println("Using PostgreSQL advisory lock")
 	}
 
 	// Connector factory (TODO: implement with actual connectors)
@@ -203,12 +222,23 @@ func main() {
 		Logger:           slog.Default(),
 	})
 
-	// Create scheduler for worker mode
-	scheduler := services.NewScheduler(services.SchedulerConfig{
-		Store:        schedulerStore,
-		TaskQueue:    taskQueue,
-		Logger:       slog.Default(),
-	})
+	// Create scheduler for worker mode (if enabled)
+	schedulerEnabled := getEnvBool("SCHEDULER_ENABLED", true)
+	schedulerLockRequired := getEnvBool("SCHEDULER_LOCK_REQUIRED", true)
+
+	var scheduler *services.Scheduler
+	if schedulerEnabled {
+		scheduler = services.NewScheduler(services.SchedulerConfig{
+			Store:        schedulerStore,
+			TaskQueue:    taskQueue,
+			Lock:         distributedLock,
+			Logger:       slog.Default(),
+			LockRequired: schedulerLockRequired,
+		})
+		log.Printf("Scheduler enabled (lock_required=%t)", schedulerLockRequired)
+	} else {
+		log.Println("Scheduler disabled via SCHEDULER_ENABLED=false")
+	}
 
 	switch mode {
 	case "api":
@@ -318,6 +348,13 @@ func getEnvInt(key string, defaultValue int) int {
 		if _, err := fmt.Sscanf(value, "%d", &result); err == nil {
 			return result
 		}
+	}
+	return defaultValue
+}
+
+func getEnvBool(key string, defaultValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		return value == "true" || value == "1" || value == "yes"
 	}
 	return defaultValue
 }
