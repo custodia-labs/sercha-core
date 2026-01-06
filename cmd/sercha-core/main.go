@@ -21,6 +21,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"log/slog"
@@ -31,6 +33,8 @@ import (
 
 	"github.com/custodia-labs/sercha-core/internal/adapters/driven/ai"
 	"github.com/custodia-labs/sercha-core/internal/adapters/driven/auth"
+	"github.com/custodia-labs/sercha-core/internal/adapters/driven/connectors"
+	"github.com/custodia-labs/sercha-core/internal/adapters/driven/connectors/github"
 	"github.com/custodia-labs/sercha-core/internal/adapters/driven/postgres"
 	postgresqueue "github.com/custodia-labs/sercha-core/internal/adapters/driven/queue/postgres"
 	redisqueue "github.com/custodia-labs/sercha-core/internal/adapters/driven/queue/redis"
@@ -50,6 +54,15 @@ import (
 
 var version = "dev"
 
+// redisPinger wraps a redis.Client to implement the http.Pinger interface
+type redisPinger struct {
+	client *redis.Client
+}
+
+func (r *redisPinger) Ping(ctx context.Context) error {
+	return r.client.Ping(ctx).Err()
+}
+
 func main() {
 	// Get run mode: environment variable takes precedence, command arg as fallback
 	mode := "all"
@@ -63,12 +76,19 @@ func main() {
 	log.Printf("sercha-core %s starting in %s mode", version, mode)
 
 	// Configuration from environment
-	jwtSecret := getEnv("JWT_SECRET", "development-secret-change-in-production")
-	teamID := getEnv("TEAM_ID", "default-team")
 	port := getEnvInt("PORT", 8080)
 	databaseURL := getEnv("DATABASE_URL", "postgres://sercha:sercha_dev@localhost:5432/sercha?sslmode=disable")
 	redisURL := getEnv("REDIS_URL", "")
-	vespaURL := getEnv("VESPA_URL", "http://localhost:19071")
+	vespaConfigURL := getEnv("VESPA_CONFIG_URL", "http://localhost:19071")      // Config server (deployment)
+	vespaContainerURL := getEnv("VESPA_CONTAINER_URL", "http://localhost:8080") // Container cluster (document/search API)
+	baseURL := getEnv("BASE_URL", fmt.Sprintf("http://localhost:%d", port))
+
+	// Single org
+	const teamID = "default"
+
+	// JWT secret and encryption key - auto-derived if not set
+	jwtSecret := getOrGenerateSecret("JWT_SECRET", databaseURL)
+	masterKey := getMasterKey(jwtSecret)
 
 	// Setup context with cancellation for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -122,7 +142,7 @@ func main() {
 
 	// ===== Initialize Vespa =====
 	log.Println("Connecting to Vespa...")
-	searchEngine := vespa.NewSearchEngine(vespa.DefaultConfig(vespaURL))
+	searchEngine := vespa.NewSearchEngine(vespa.DefaultConfig(vespaContainerURL))
 	if err := searchEngine.HealthCheck(ctx); err != nil {
 		log.Printf("Warning: Vespa health check failed: %v (search may not work)", err)
 	} else {
@@ -180,8 +200,55 @@ func main() {
 		log.Println("Using PostgreSQL advisory lock")
 	}
 
-	// Connector factory (TODO: implement with actual connectors)
+	// ===== Connector Infrastructure =====
 	var connectorFactory driven.ConnectorFactory
+	var installationStore driven.InstallationStore
+	var oauthStateStore driven.OAuthStateStore
+	var providerConfigStore driven.ProviderConfigStore
+
+	// Create secret encryptor (shared by all stores that encrypt secrets)
+	encryptor, err := postgres.NewSecretEncryptor(masterKey)
+	if err != nil {
+		log.Fatalf("Failed to create secret encryptor: %v", err)
+	}
+
+	// Create stores
+	installationStore = postgres.NewInstallationStore(db.DB, encryptor)
+	providerConfigStore = postgres.NewProviderConfigStore(db.DB, encryptor)
+	oauthStateStore = postgres.NewOAuthStateStore(db.DB)
+
+	// Create token provider factory
+	tokenProviderFactory := auth.NewTokenProviderFactory(installationStore)
+
+	// Register token refreshers for each provider type
+	// These dynamically load OAuth credentials from provider_configs table
+	tokenProviderFactory.RegisterRefresher(domain.ProviderTypeGitHub, func(ctx context.Context, refreshToken string) (*driven.OAuthToken, error) {
+		cfg, err := providerConfigStore.Get(ctx, domain.ProviderTypeGitHub)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get github provider config: %w", err)
+		}
+		if cfg == nil || cfg.Secrets == nil || cfg.Secrets.ClientID == "" {
+			return nil, fmt.Errorf("github provider not configured - use POST /api/v1/providers/github/config")
+		}
+		return github.NewOAuthHandler().RefreshToken(ctx, cfg.Secrets.ClientID, cfg.Secrets.ClientSecret, refreshToken)
+	})
+
+	// Create connector factory
+	factory := connectors.NewFactory(tokenProviderFactory)
+
+	// Register GitHub connector
+	factory.Register(github.NewBuilder())
+	factory.RegisterOAuthHandler(domain.ProviderTypeGitHub, github.NewOAuthHandler())
+
+	connectorFactory = factory
+	log.Printf("Connector infrastructure initialized (providers: %v)", factory.SupportedTypes())
+	log.Printf("  OAuth callback URL: %s/api/v1/oauth/callback", baseURL)
+
+	// Create container lister factory for installation management
+	containerListerFactory := connectors.NewContainerListerFactory()
+	// Register GitHub container lister factory
+	containerListerFactory.Register(domain.ProviderTypeGitHub,
+		github.NewContainerListerFactory(installationStore, tokenProviderFactory, ""))
 
 	// Runtime configuration
 	sessionBackend := "postgres"
@@ -202,7 +269,30 @@ func main() {
 	documentService := services.NewDocumentService(documentStore, chunkStore)
 	searchService := services.NewSearchService(searchEngine, documentStore, runtimeServices)
 	settingsService := services.NewSettingsService(settingsStore, aiFactory, runtimeServices, teamID)
-	vespaAdminService := services.NewVespaAdminService(vespaDeployer, vespaConfigStore, settingsStore, runtimeServices, teamID)
+	vespaAdminService := services.NewVespaAdminService(vespaDeployer, vespaConfigStore, settingsStore, searchEngine, runtimeServices, teamID, vespaConfigURL)
+
+	// Provider service (only available when MASTER_KEY is set)
+	var providerService driving.ProviderService
+	if providerConfigStore != nil {
+		providerService = services.NewProviderService(providerConfigStore)
+	}
+
+	// OAuth service (handles OAuth flows for connector installations)
+	oauthService := services.NewOAuthService(services.OAuthServiceConfig{
+		ProviderConfigStore: providerConfigStore,
+		OAuthStateStore:     oauthStateStore,
+		InstallationStore:   installationStore,
+		ConnectorFactory:    factory,
+		BaseURL:             baseURL,
+	})
+
+	// Installation service (manages connector installations)
+	installationService := services.NewInstallationService(services.InstallationServiceConfig{
+		InstallationStore:      installationStore,
+		SourceStore:            sourceStore,
+		ContainerListerFactory: containerListerFactory,
+		TokenProviderFactory:   tokenProviderFactory,
+	})
 
 	// Log startup configuration
 	log.Printf("Runtime config: session_backend=%s, embedding=%t, llm=%t, search_mode=%s",
@@ -246,7 +336,11 @@ func main() {
 	switch mode {
 	case "api":
 		// API-only mode: HTTP server, no worker
-		runAPI(port, authService, userService, searchService, sourceService, documentService, settingsService, vespaAdminService)
+		var redisPing http.Pinger
+		if redisClient != nil {
+			redisPing = &redisPinger{client: redisClient}
+		}
+		runAPI(port, authService, userService, searchService, sourceService, documentService, settingsService, vespaAdminService, providerService, oauthService, installationService, syncOrchestrator, taskQueue, db, redisPing)
 
 	case "worker":
 		// Worker-only mode: Task processing, scheduler, no HTTP server
@@ -257,7 +351,11 @@ func main() {
 		// Start worker in background
 		go runWorkerMode(ctx, taskQueue, syncOrchestrator, scheduler)
 		// Run API in foreground (blocks)
-		runAPI(port, authService, userService, searchService, sourceService, documentService, settingsService, vespaAdminService)
+		var redisPing http.Pinger
+		if redisClient != nil {
+			redisPing = &redisPinger{client: redisClient}
+		}
+		runAPI(port, authService, userService, searchService, sourceService, documentService, settingsService, vespaAdminService, providerService, oauthService, installationService, syncOrchestrator, taskQueue, db, redisPing)
 
 	default:
 		log.Fatalf("Unknown mode: %s (use: api, worker, or all)", mode)
@@ -273,6 +371,13 @@ func runAPI(
 	documentService driving.DocumentService,
 	settingsService driving.SettingsService,
 	vespaAdminService driving.VespaAdminService,
+	providerService driving.ProviderService,
+	oauthService driving.OAuthService,
+	installationService driving.InstallationService,
+	syncOrchestrator driving.SyncOrchestrator,
+	taskQueue driven.TaskQueue,
+	db http.Pinger,
+	redisClient http.Pinger, // can be nil
 ) {
 	cfg := http.Config{
 		Host:    "0.0.0.0",
@@ -289,6 +394,13 @@ func runAPI(
 		documentService,
 		settingsService,
 		vespaAdminService,
+		providerService,
+		oauthService,
+		installationService,
+		syncOrchestrator,
+		taskQueue,
+		db,
+		redisClient,
 	)
 
 	log.Printf("API server starting on :%d", port)
@@ -360,4 +472,36 @@ func getEnvBool(key string, defaultValue bool) bool {
 		return value == "true" || value == "1" || value == "yes"
 	}
 	return defaultValue
+}
+
+// getOrGenerateSecret returns the JWT secret from env var or derives one from database URL.
+// This allows the app to "just work" without requiring explicit configuration.
+// The derived secret is stable across restarts (based on database URL).
+func getOrGenerateSecret(envKey, databaseURL string) string {
+	if secret := os.Getenv(envKey); secret != "" {
+		return secret
+	}
+
+	// Derive a stable secret from database URL - unique per installation
+	hash := sha256.Sum256([]byte("sercha-jwt-secret:" + databaseURL))
+	derived := hex.EncodeToString(hash[:])
+	log.Printf("Note: %s not set, using auto-derived secret (stable across restarts)", envKey)
+	return derived
+}
+
+// getMasterKey returns a 32-byte encryption key for secrets.
+// If MASTER_KEY env var is set (64 hex chars), it's decoded and used directly.
+// Otherwise, derives a key from JWT_SECRET using SHA-256.
+func getMasterKey(jwtSecret string) []byte {
+	if masterKeyHex := os.Getenv("MASTER_KEY"); masterKeyHex != "" {
+		masterKey, err := hex.DecodeString(masterKeyHex)
+		if err != nil || len(masterKey) != 32 {
+			log.Fatalf("MASTER_KEY must be 64 hex characters (32 bytes): got %d bytes", len(masterKey))
+		}
+		return masterKey
+	}
+
+	// Derive from JWT_SECRET
+	hash := sha256.Sum256([]byte("sercha-master-key:" + jwtSecret))
+	return hash[:]
 }

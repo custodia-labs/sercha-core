@@ -66,6 +66,9 @@ type VespaStatus struct {
 	// Healthy indicates if the Vespa cluster is healthy
 	Healthy bool `json:"healthy"`
 
+	// IndexedChunks is the number of chunks currently indexed in Vespa
+	IndexedChunks int64 `json:"indexed_chunks"`
+
 	// ClusterInfo contains parsed information about the Vespa cluster (production mode only)
 	ClusterInfo *domain.VespaClusterInfo `json:"cluster_info,omitempty"`
 }

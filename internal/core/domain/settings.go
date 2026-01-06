@@ -14,13 +14,10 @@ const (
 )
 
 // Settings holds team-wide configuration
+// Note: AI configuration (provider, model, API keys) is managed via AISettings
+// and the /settings/ai endpoint, not here.
 type Settings struct {
 	TeamID string `json:"team_id"`
-
-	// AI Configuration
-	AIProvider     AIProvider `json:"ai_provider"`
-	EmbeddingModel string     `json:"embedding_model"`
-	AIEndpoint     string     `json:"ai_endpoint,omitempty"` // For self-hosted (Ollama)
 
 	// Search Defaults
 	DefaultSearchMode SearchMode `json:"default_search_mode"`
@@ -44,8 +41,6 @@ type Settings struct {
 func DefaultSettings(teamID string) *Settings {
 	return &Settings{
 		TeamID:                teamID,
-		AIProvider:            AIProviderOpenAI,
-		EmbeddingModel:        "text-embedding-3-small",
 		DefaultSearchMode:     SearchModeHybrid,
 		ResultsPerPage:        20,
 		MaxResultsPerPage:     100,

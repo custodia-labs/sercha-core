@@ -26,17 +26,17 @@ type TokenProvider interface {
 	IsValid(ctx context.Context) bool
 }
 
-// TokenProviderFactory creates TokenProviders for sources.
-// It resolves source.Config.CredentialID to actual credentials.
+// TokenProviderFactory creates TokenProviders from installation IDs.
+// It resolves installation credentials and wraps them in appropriate TokenProviders.
 type TokenProviderFactory interface {
-	// Create creates a TokenProvider for the given source.
-	// It looks up credentials by source.Config.CredentialID and wraps them
-	// in an appropriate TokenProvider based on the auth method.
-	Create(ctx context.Context, source *domain.Source) (TokenProvider, error)
+	// Create creates a TokenProvider for an installation.
+	// It looks up the installation by ID, decrypts credentials, and creates
+	// an appropriate TokenProvider based on the auth method.
+	Create(ctx context.Context, installationID string) (TokenProvider, error)
 
-	// CreateFromCredentials creates a TokenProvider from credentials directly.
-	// Use this when you already have the credentials loaded.
-	CreateFromCredentials(ctx context.Context, creds *domain.Credentials) (TokenProvider, error)
+	// CreateFromInstallation creates a TokenProvider from an installation directly.
+	// Use this when you already have the installation loaded.
+	CreateFromInstallation(ctx context.Context, inst *domain.Installation) (TokenProvider, error)
 }
 
 // TokenRefresher handles OAuth token refresh operations.

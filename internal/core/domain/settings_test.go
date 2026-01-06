@@ -32,12 +32,7 @@ func TestDefaultSettings(t *testing.T) {
 	if settings.TeamID != teamID {
 		t.Errorf("expected TeamID %s, got %s", teamID, settings.TeamID)
 	}
-	if settings.AIProvider != AIProviderOpenAI {
-		t.Errorf("expected AIProvider openai, got %s", settings.AIProvider)
-	}
-	if settings.EmbeddingModel != "text-embedding-3-small" {
-		t.Errorf("expected EmbeddingModel text-embedding-3-small, got %s", settings.EmbeddingModel)
-	}
+	// Note: AI configuration is now in AISettings, not Settings
 	if settings.DefaultSearchMode != SearchModeHybrid {
 		t.Errorf("expected DefaultSearchMode hybrid, got %s", settings.DefaultSearchMode)
 	}
@@ -65,11 +60,9 @@ func TestDefaultSettings(t *testing.T) {
 }
 
 func TestSettings(t *testing.T) {
+	// Note: AI configuration (provider, model, endpoint) is now in AISettings
 	settings := &Settings{
 		TeamID:                "team-123",
-		AIProvider:            AIProviderOllama,
-		EmbeddingModel:        "nomic-embed-text",
-		AIEndpoint:            "http://localhost:11434",
 		DefaultSearchMode:     SearchModeTextOnly,
 		ResultsPerPage:        10,
 		MaxResultsPerPage:     50,
@@ -79,12 +72,6 @@ func TestSettings(t *testing.T) {
 		AutoSuggestEnabled:    true,
 	}
 
-	if settings.AIProvider != AIProviderOllama {
-		t.Errorf("expected AIProvider ollama, got %s", settings.AIProvider)
-	}
-	if settings.AIEndpoint != "http://localhost:11434" {
-		t.Errorf("expected AIEndpoint http://localhost:11434, got %s", settings.AIEndpoint)
-	}
 	if settings.DefaultSearchMode != SearchModeTextOnly {
 		t.Errorf("expected DefaultSearchMode text, got %s", settings.DefaultSearchMode)
 	}
@@ -93,6 +80,9 @@ func TestSettings(t *testing.T) {
 	}
 	if settings.SemanticSearchEnabled {
 		t.Error("expected SemanticSearchEnabled to be false")
+	}
+	if settings.ResultsPerPage != 10 {
+		t.Errorf("expected ResultsPerPage 10, got %d", settings.ResultsPerPage)
 	}
 }
 

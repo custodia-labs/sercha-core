@@ -23,23 +23,21 @@ func NewSettingsStore(db *DB) *SettingsStore {
 }
 
 // GetSettings retrieves settings for a team
+// Note: AI configuration is managed via AISettings (ai_settings table), not here
 func (s *SettingsStore) GetSettings(ctx context.Context, teamID string) (*domain.Settings, error) {
 	query := `
-		SELECT team_id, ai_provider, embedding_model, ai_endpoint, default_search_mode,
-			   results_per_page, max_results_per_page, sync_interval_minutes, sync_enabled,
-			   semantic_search_enabled, auto_suggest_enabled, updated_at, updated_by
+		SELECT team_id, default_search_mode, results_per_page, max_results_per_page,
+			   sync_interval_minutes, sync_enabled, semantic_search_enabled,
+			   auto_suggest_enabled, updated_at, updated_by
 		FROM settings
 		WHERE team_id = $1
 	`
 
 	var settings domain.Settings
-	var aiProvider, embeddingModel, aiEndpoint, updatedBy sql.NullString
+	var updatedBy sql.NullString
 
 	err := s.db.QueryRowContext(ctx, query, teamID).Scan(
 		&settings.TeamID,
-		&aiProvider,
-		&embeddingModel,
-		&aiEndpoint,
 		&settings.DefaultSearchMode,
 		&settings.ResultsPerPage,
 		&settings.MaxResultsPerPage,
@@ -58,27 +56,20 @@ func (s *SettingsStore) GetSettings(ctx context.Context, teamID string) (*domain
 		return nil, err
 	}
 
-	if aiProvider.Valid {
-		settings.AIProvider = domain.AIProvider(aiProvider.String)
-	}
-	settings.EmbeddingModel = embeddingModel.String
-	settings.AIEndpoint = aiEndpoint.String
 	settings.UpdatedBy = updatedBy.String
 
 	return &settings, nil
 }
 
 // SaveSettings persists team settings
+// Note: AI configuration is managed via SaveAISettings, not here
 func (s *SettingsStore) SaveSettings(ctx context.Context, settings *domain.Settings) error {
 	query := `
-		INSERT INTO settings (team_id, ai_provider, embedding_model, ai_endpoint, default_search_mode,
-							  results_per_page, max_results_per_page, sync_interval_minutes, sync_enabled,
-							  semantic_search_enabled, auto_suggest_enabled, updated_at, updated_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		INSERT INTO settings (team_id, default_search_mode, results_per_page, max_results_per_page,
+							  sync_interval_minutes, sync_enabled, semantic_search_enabled,
+							  auto_suggest_enabled, updated_at, updated_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (team_id) DO UPDATE SET
-			ai_provider = EXCLUDED.ai_provider,
-			embedding_model = EXCLUDED.embedding_model,
-			ai_endpoint = EXCLUDED.ai_endpoint,
 			default_search_mode = EXCLUDED.default_search_mode,
 			results_per_page = EXCLUDED.results_per_page,
 			max_results_per_page = EXCLUDED.max_results_per_page,
@@ -94,9 +85,6 @@ func (s *SettingsStore) SaveSettings(ctx context.Context, settings *domain.Setti
 
 	_, err := s.db.ExecContext(ctx, query,
 		settings.TeamID,
-		string(settings.AIProvider),
-		settings.EmbeddingModel,
-		settings.AIEndpoint,
 		string(settings.DefaultSearchMode),
 		settings.ResultsPerPage,
 		settings.MaxResultsPerPage,

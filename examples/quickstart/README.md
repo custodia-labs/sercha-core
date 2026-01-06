@@ -10,24 +10,42 @@ Single container deployment with all dependencies. Ideal for development and sma
 │         API + Worker + Scheduler        │
 └──────────────────┬──────────────────────┘
                    │
-     ┌─────────────┼─────────────┐
-     │             │             │
-┌────▼────┐  ┌─────▼─────┐  ┌────▼────┐
-│PostgreSQL│  │   Redis   │  │  Vespa  │
-└─────────┘  └───────────┘  └─────────┘
+          ┌────────┴────────┐
+          │                 │
+    ┌─────▼─────┐     ┌─────▼─────┐
+    │ PostgreSQL │     │   Vespa   │
+    └───────────┘     └───────────┘
 ```
 
-## Usage
+## Quick Start
 
 ```bash
 # Start all services
 docker compose up -d
 
-# View logs
-docker compose logs -f sercha
+# Wait for services to be healthy (1-2 minutes for Vespa)
+docker compose ps
 
-# Stop
-docker compose down
+# Run the interactive setup script
+./quickstart.sh
+```
+
+The `quickstart.sh` script will guide you through:
+- Creating an admin user
+- Configuring GitHub OAuth
+- Connecting a repository
+- Running your first search
+
+### Environment Variables
+
+You can pre-set these to skip the prompts:
+
+```bash
+export GITHUB_CLIENT_ID="your-client-id"
+export GITHUB_CLIENT_SECRET="your-client-secret"
+export ADMIN_EMAIL="admin@example.com"
+export ADMIN_PASSWORD="your-password"
+./quickstart.sh
 ```
 
 ## Services
@@ -36,26 +54,18 @@ docker compose down
 |---------|------|---------|
 | sercha | 8080 | API server |
 | postgres | 5432 | Database |
-| redis | 6379 | Sessions, queue |
 | vespa | 19071 | Search engine |
 
-## Initial Setup
+## Full Documentation
 
-Once running, create the first admin user:
+For detailed documentation including API reference, see the **[Quickstart Guide](https://docs.sercha.dev/core/quickstart)**.
+
+## Stopping Services
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/setup \
-  -H "Content-Type: application/json" \
-  -d '{"email": "admin@example.com", "password": "changeme", "name": "Admin"}'
+# Stop services (preserves data)
+docker compose down
+
+# Stop and remove all data
+docker compose down -v
 ```
-
-## Configuration
-
-Key environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `JWT_SECRET` | - | Token signing secret (change in production) |
-| `PORT` | 8080 | API port |
-
-See [Configuration Reference](../../docs/core/architecture/run-modes/configuration.md) for all options.

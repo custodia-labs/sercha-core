@@ -183,3 +183,73 @@ CREATE INDEX IF NOT EXISTS idx_tasks_dequeue
     WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_tasks_team_id ON tasks(team_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+
+-- Connector installations (OAuth tokens, API keys, PATs)
+-- Secrets encrypted at application level (AES-GCM), stored as bytea
+CREATE TABLE IF NOT EXISTS connector_installations (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    provider_type TEXT NOT NULL,
+    auth_method TEXT NOT NULL,
+    secret_blob BYTEA,
+    oauth_token_type TEXT,
+    oauth_expiry TIMESTAMPTZ,
+    oauth_scopes TEXT[],
+    account_id TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_used_at TIMESTAMPTZ,
+    CONSTRAINT unique_provider_account UNIQUE (provider_type, account_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_installations_provider ON connector_installations(provider_type);
+
+-- OAuth state for CSRF protection and PKCE flow
+-- Single-use: DELETE ... RETURNING
+CREATE TABLE IF NOT EXISTS oauth_states (
+    state TEXT PRIMARY KEY,
+    provider_type TEXT NOT NULL,
+    code_verifier TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_oauth_states_expires ON oauth_states(expires_at);
+
+-- Add installation_id and selected_containers to sources table
+-- Using DO block to handle idempotent column additions
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'sources' AND column_name = 'installation_id'
+    ) THEN
+        ALTER TABLE sources ADD COLUMN installation_id TEXT
+            REFERENCES connector_installations(id) ON DELETE SET NULL;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'sources' AND column_name = 'selected_containers'
+    ) THEN
+        ALTER TABLE sources ADD COLUMN selected_containers TEXT[] DEFAULT '{}';
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_sources_installation_id ON sources(installation_id);
+
+-- Provider configurations (OAuth app credentials, API endpoints)
+-- One config per provider type. Multiple installations can use the same config.
+-- Secrets encrypted at application level (AES-GCM), stored as bytea
+CREATE TABLE IF NOT EXISTS provider_configs (
+    provider_type TEXT PRIMARY KEY,
+    secret_blob BYTEA,
+    auth_url TEXT,
+    token_url TEXT,
+    scopes TEXT[],
+    redirect_uri TEXT,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

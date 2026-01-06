@@ -12,6 +12,14 @@ type Source struct {
 	CreatedAt    time.Time    `json:"created_at"`
 	UpdatedAt    time.Time    `json:"updated_at"`
 	CreatedBy    string       `json:"created_by"` // User ID of creator
+
+	// InstallationID references the connector installation for authentication
+	InstallationID string `json:"installation_id,omitempty"`
+
+	// SelectedContainers lists the container IDs to index
+	// Empty means index all accessible containers
+	// Examples: ["owner/repo1", "owner/repo2"] for GitHub
+	SelectedContainers []string `json:"selected_containers,omitempty"`
 }
 
 // SourceConfig holds provider-specific configuration

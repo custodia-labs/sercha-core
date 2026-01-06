@@ -55,12 +55,14 @@ services:
       PORT: 8080
       DATABASE_URL: postgres://sercha:sercha_dev@postgres:5432/sercha?sslmode=disable
       REDIS_URL: redis://redis:6379
-      VESPA_URL: http://vespa:19071
+      VESPA_CONFIG_URL: http://vespa:19071
+      VESPA_CONTAINER_URL: http://vespa:8080
       JWT_SECRET: dev-secret-change-me
+      BASE_URL: http://localhost:8080
       DB_MAX_OPEN_CONNS: 10
       DB_MAX_IDLE_CONNS: 3
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/ready"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -80,8 +82,10 @@ services:
       PORT: 8080
       DATABASE_URL: postgres://sercha:sercha_dev@postgres:5432/sercha?sslmode=disable
       REDIS_URL: redis://redis:6379
-      VESPA_URL: http://vespa:19071
+      VESPA_CONFIG_URL: http://vespa:19071
+      VESPA_CONTAINER_URL: http://vespa:8080
       JWT_SECRET: dev-secret-change-me
+      BASE_URL: http://localhost:8080
       DB_MAX_OPEN_CONNS: 10
       DB_MAX_IDLE_CONNS: 3
     healthcheck:
@@ -105,7 +109,8 @@ services:
       RUN_MODE: worker
       DATABASE_URL: postgres://sercha:sercha_dev@postgres:5432/sercha?sslmode=disable
       REDIS_URL: redis://redis:6379
-      VESPA_URL: http://vespa:19071
+      VESPA_CONFIG_URL: http://vespa:19071
+      VESPA_CONTAINER_URL: http://vespa:8080
       JWT_SECRET: dev-secret-change-me
       WORKER_CONCURRENCY: 2
       SCHEDULER_ENABLED: "true"
@@ -126,7 +131,8 @@ services:
       RUN_MODE: worker
       DATABASE_URL: postgres://sercha:sercha_dev@postgres:5432/sercha?sslmode=disable
       REDIS_URL: redis://redis:6379
-      VESPA_URL: http://vespa:19071
+      VESPA_CONFIG_URL: http://vespa:19071
+      VESPA_CONTAINER_URL: http://vespa:8080
       JWT_SECRET: dev-secret-change-me
       WORKER_CONCURRENCY: 2
       SCHEDULER_ENABLED: "true"

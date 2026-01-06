@@ -5,9 +5,17 @@ import (
 	"database/sql"
 	_ "embed"
 	"fmt"
+	"log/slog"
 	"time"
 
 	_ "github.com/lib/pq"
+)
+
+const (
+	// schemaLockID is the advisory lock ID used to serialize schema initialization.
+	// This prevents race conditions when multiple instances start simultaneously.
+	// The value is arbitrary but must be consistent across all instances.
+	schemaLockID = 12345678
 )
 
 //go:embed schema.sql
@@ -69,13 +77,36 @@ func Connect(ctx context.Context, cfg Config) (*DB, error) {
 	return &DB{DB: db}, nil
 }
 
-// InitSchema runs the schema initialization
-// This is idempotent - safe to run multiple times
+// InitSchema runs the schema initialization with advisory lock protection.
+// This is idempotent - safe to run multiple times.
+// Uses PostgreSQL advisory locks to prevent race conditions when multiple
+// instances start simultaneously.
 func (db *DB) InitSchema(ctx context.Context) error {
-	_, err := db.ExecContext(ctx, schema)
+	// Acquire advisory lock to serialize schema initialization across instances.
+	// pg_advisory_lock blocks until the lock is acquired.
+	slog.Info("acquiring schema initialization lock")
+	_, err := db.ExecContext(ctx, "SELECT pg_advisory_lock($1)", schemaLockID)
+	if err != nil {
+		return fmt.Errorf("failed to acquire schema lock: %w", err)
+	}
+
+	// Ensure we release the lock when done
+	defer func() {
+		_, unlockErr := db.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", schemaLockID)
+		if unlockErr != nil {
+			slog.Error("failed to release schema lock", "error", unlockErr)
+		} else {
+			slog.Info("released schema initialization lock")
+		}
+	}()
+
+	slog.Info("running schema initialization")
+	_, err = db.ExecContext(ctx, schema)
 	if err != nil {
 		return fmt.Errorf("failed to initialize schema: %w", err)
 	}
+
+	slog.Info("schema initialization complete")
 	return nil
 }
 

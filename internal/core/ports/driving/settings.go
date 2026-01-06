@@ -7,10 +7,8 @@ import (
 )
 
 // UpdateSettingsRequest represents a request to update settings
+// Note: AI configuration is managed via UpdateAISettingsRequest and /settings/ai endpoint
 type UpdateSettingsRequest struct {
-	AIProvider            *domain.AIProvider `json:"ai_provider,omitempty"`
-	EmbeddingModel        *string            `json:"embedding_model,omitempty"`
-	AIEndpoint            *string            `json:"ai_endpoint,omitempty"`
 	DefaultSearchMode     *domain.SearchMode `json:"default_search_mode,omitempty"`
 	ResultsPerPage        *int               `json:"results_per_page,omitempty"`
 	SyncIntervalMinutes   *int               `json:"sync_interval_minutes,omitempty"`
