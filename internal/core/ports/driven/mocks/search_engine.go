@@ -130,8 +130,8 @@ func (m *MockSearchEngine) Reset() {
 	m.bySource = make(map[string][]*domain.Chunk)
 }
 
-func (m *MockSearchEngine) Count() int {
+func (m *MockSearchEngine) Count(ctx context.Context) (int64, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return len(m.chunks)
+	return int64(len(m.chunks)), nil
 }

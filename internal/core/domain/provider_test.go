@@ -127,3 +127,93 @@ func TestProviderInfo(t *testing.T) {
 		t.Error("expected Available to be true")
 	}
 }
+
+func TestProviderConfig_IsConfigured(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   *ProviderConfig
+		expected bool
+	}{
+		{
+			name: "nil secrets",
+			config: &ProviderConfig{
+				ProviderType: ProviderTypeGitHub,
+				Secrets:      nil,
+			},
+			expected: false,
+		},
+		{
+			name: "empty secrets",
+			config: &ProviderConfig{
+				ProviderType: ProviderTypeGitHub,
+				Secrets:      &ProviderSecrets{},
+			},
+			expected: false,
+		},
+		{
+			name: "with client_id",
+			config: &ProviderConfig{
+				ProviderType: ProviderTypeGitHub,
+				Secrets: &ProviderSecrets{
+					ClientID:     "test-client-id",
+					ClientSecret: "test-client-secret",
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "with api_key only",
+			config: &ProviderConfig{
+				ProviderType: ProviderTypeS3,
+				Secrets: &ProviderSecrets{
+					APIKey: "test-api-key",
+				},
+			},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.config.IsConfigured(); got != tt.expected {
+				t.Errorf("IsConfigured() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestProviderSecrets(t *testing.T) {
+	secrets := ProviderSecrets{
+		ClientID:     "client-id-123",
+		ClientSecret: "client-secret-456",
+		APIKey:       "api-key-789",
+	}
+
+	if secrets.ClientID != "client-id-123" {
+		t.Errorf("expected ClientID client-id-123, got %s", secrets.ClientID)
+	}
+	if secrets.ClientSecret != "client-secret-456" {
+		t.Errorf("expected ClientSecret client-secret-456, got %s", secrets.ClientSecret)
+	}
+	if secrets.APIKey != "api-key-789" {
+		t.Errorf("expected APIKey api-key-789, got %s", secrets.APIKey)
+	}
+}
+
+func TestProviderConfigSummary(t *testing.T) {
+	summary := ProviderConfigSummary{
+		ProviderType: ProviderTypeGitHub,
+		Enabled:      true,
+		HasSecrets:   true,
+	}
+
+	if summary.ProviderType != ProviderTypeGitHub {
+		t.Errorf("expected ProviderType github, got %s", summary.ProviderType)
+	}
+	if !summary.Enabled {
+		t.Error("expected Enabled to be true")
+	}
+	if !summary.HasSecrets {
+		t.Error("expected HasSecrets to be true")
+	}
+}

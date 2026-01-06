@@ -49,16 +49,7 @@ func (s *settingsService) Update(ctx context.Context, updaterID string, req driv
 		settings = domain.DefaultSettings(s.teamID)
 	}
 
-	// Apply updates
-	if req.AIProvider != nil {
-		settings.AIProvider = *req.AIProvider
-	}
-	if req.EmbeddingModel != nil {
-		settings.EmbeddingModel = *req.EmbeddingModel
-	}
-	if req.AIEndpoint != nil {
-		settings.AIEndpoint = *req.AIEndpoint
-	}
+	// Apply updates (AI settings are managed via UpdateAISettings)
 	if req.DefaultSearchMode != nil {
 		settings.DefaultSearchMode = *req.DefaultSearchMode
 	}

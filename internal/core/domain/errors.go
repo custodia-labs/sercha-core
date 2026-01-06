@@ -42,4 +42,16 @@ var (
 
 	// ErrServiceUnavailable indicates the AI service could not be reached
 	ErrServiceUnavailable = errors.New("service unavailable")
+
+	// ErrUnsupportedProvider indicates the connector provider type is not supported
+	ErrUnsupportedProvider = errors.New("unsupported provider")
+
+	// ErrUnsupportedAuthMethod indicates the authentication method is not supported
+	ErrUnsupportedAuthMethod = errors.New("unsupported auth method")
+
+	// ErrInstallationNotFound indicates the connector installation was not found
+	ErrInstallationNotFound = errors.New("installation not found")
+
+	// ErrInUse indicates the resource is in use and cannot be deleted
+	ErrInUse = errors.New("resource in use")
 )

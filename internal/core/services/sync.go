@@ -73,6 +73,7 @@ func NewSyncOrchestrator(cfg SyncOrchestratorConfig) *SyncOrchestrator {
 
 // SyncSource synchronizes a single source.
 // This is the main entry point for the sync pipeline.
+// For sources with container selection, it syncs each selected container.
 func (o *SyncOrchestrator) SyncSource(ctx context.Context, sourceID string) (*domain.SyncResult, error) {
 	startTime := time.Now()
 
@@ -88,18 +89,7 @@ func (o *SyncOrchestrator) SyncSource(ctx context.Context, sourceID string) (*do
 		return o.failSync(ctx, sourceID, startTime, fmt.Errorf("source is disabled"))
 	}
 
-	// Step 2: Create connector
-	connector, err := o.connectorFactory.Create(ctx, source)
-	if err != nil {
-		return o.failSync(ctx, sourceID, startTime, fmt.Errorf("failed to create connector: %w", err))
-	}
-
-	// Step 3: Validate connector (test connection)
-	if err := connector.TestConnection(ctx, source); err != nil {
-		return o.failSync(ctx, sourceID, startTime, fmt.Errorf("connection test failed: %w", err))
-	}
-
-	// Step 4: Get sync state
+	// Step 2: Get sync state
 	syncState, err := o.syncStore.Get(ctx, sourceID)
 	if err != nil {
 		// Create initial sync state
@@ -119,32 +109,145 @@ func (o *SyncOrchestrator) SyncSource(ctx context.Context, sourceID string) (*do
 		o.logger.Warn("failed to update sync state to running", "error", err)
 	}
 
-	// Step 5: Fetch documents
+	// Determine containers to sync
+	// If selected containers are specified, sync each one
+	// Otherwise, sync with empty containerID (provider indexes all content)
+	containers := source.SelectedContainers
+	if len(containers) == 0 {
+		containers = []string{""} // Empty string means sync all accessible content
+	}
+
+	// Aggregate stats across all containers
+	aggregatedStats := domain.SyncStats{}
+	var lastCursor string
+	var syncErrors []string
+
+	// Step 3: Sync each container
+	for _, containerID := range containers {
+		containerStats, cursor, err := o.syncContainer(ctx, source, syncState, containerID)
+		if err != nil {
+			o.logger.Error("container sync failed",
+				"source_id", sourceID,
+				"container_id", containerID,
+				"error", err,
+			)
+			syncErrors = append(syncErrors, fmt.Sprintf("%s: %s", containerID, err.Error()))
+			aggregatedStats.Errors++
+			continue
+		}
+
+		// Aggregate stats
+		aggregatedStats.DocumentsAdded += containerStats.DocumentsAdded
+		aggregatedStats.DocumentsUpdated += containerStats.DocumentsUpdated
+		aggregatedStats.DocumentsDeleted += containerStats.DocumentsDeleted
+		aggregatedStats.ChunksIndexed += containerStats.ChunksIndexed
+		aggregatedStats.Errors += containerStats.Errors
+
+		if cursor != "" {
+			lastCursor = cursor // Use last non-empty cursor
+		}
+	}
+
+	// Step 4: Update final sync state
+	completedAt := time.Now()
+	if len(syncErrors) > 0 && len(syncErrors) == len(containers) {
+		// All containers failed
+		syncState.Status = domain.SyncStatusFailed
+		syncState.Error = fmt.Sprintf("all containers failed: %v", syncErrors)
+	} else if len(syncErrors) > 0 {
+		// Partial failure
+		syncState.Status = domain.SyncStatusCompleted // Still mark as completed
+		syncState.Error = fmt.Sprintf("partial failure: %v", syncErrors)
+	} else {
+		syncState.Status = domain.SyncStatusCompleted
+		syncState.Error = ""
+	}
+
+	syncState.LastSyncAt = &completedAt
+	syncState.CompletedAt = &completedAt
+	syncState.Cursor = lastCursor
+	syncState.Stats = aggregatedStats
+
+	if err := o.syncStore.Save(ctx, syncState); err != nil {
+		o.logger.Warn("failed to update sync state", "error", err)
+	}
+
+	duration := time.Since(startTime).Seconds()
+
+	o.logger.Info("sync completed",
+		"source_id", sourceID,
+		"containers_count", len(containers),
+		"duration_seconds", duration,
+		"documents_added", aggregatedStats.DocumentsAdded,
+		"documents_updated", aggregatedStats.DocumentsUpdated,
+		"documents_deleted", aggregatedStats.DocumentsDeleted,
+		"chunks_indexed", aggregatedStats.ChunksIndexed,
+		"errors", aggregatedStats.Errors,
+	)
+
+	success := syncState.Status == domain.SyncStatusCompleted && syncState.Error == ""
+	return &domain.SyncResult{
+		SourceID: sourceID,
+		Success:  success,
+		Stats:    aggregatedStats,
+		Duration: duration,
+		Cursor:   lastCursor,
+		Error:    syncState.Error,
+	}, nil
+}
+
+// syncContainer syncs a single container within a source.
+// Returns stats for this container, the cursor, and any error.
+func (o *SyncOrchestrator) syncContainer(
+	ctx context.Context,
+	source *domain.Source,
+	syncState *domain.SyncState,
+	containerID string,
+) (*domain.SyncStats, string, error) {
+	logFields := []any{"source_id", source.ID}
+	if containerID != "" {
+		logFields = append(logFields, "container_id", containerID)
+	}
+	o.logger.Info("syncing container", logFields...)
+
+	// Create connector scoped to this container
+	connector, err := o.connectorFactory.Create(ctx, source, containerID)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create connector: %w", err)
+	}
+
+	// Test connection
+	if err := connector.TestConnection(ctx, source); err != nil {
+		return nil, "", fmt.Errorf("connection test failed: %w", err)
+	}
+
+	// Use container-specific cursor if available
 	cursor := syncState.Cursor
-	stats := domain.SyncStats{}
+	stats := &domain.SyncStats{}
 	var lastCursor string
 
 	for {
 		select {
 		case <-ctx.Done():
-			return o.failSync(ctx, sourceID, startTime, ctx.Err())
+			return stats, lastCursor, ctx.Err()
 		default:
 		}
 
 		changes, nextCursor, err := connector.FetchChanges(ctx, source, cursor)
 		if err != nil {
-			return o.failSync(ctx, sourceID, startTime, fmt.Errorf("failed to fetch changes: %w", err))
+			return stats, lastCursor, fmt.Errorf("failed to fetch changes: %w", err)
 		}
 
 		if len(changes) == 0 {
 			break
 		}
 
-		// Step 6: Process each document
+		// Process each document
 		for _, change := range changes {
-			if err := o.processChange(ctx, source, change, &stats); err != nil {
+			if err := o.processChange(ctx, source, change, stats); err != nil {
 				o.logger.Warn("failed to process change",
-					"source_id", sourceID,
+					"source_id", source.ID,
+					"container_id", containerID,
 					"external_id", change.ExternalID,
 					"error", err,
 				)
@@ -161,38 +264,15 @@ func (o *SyncOrchestrator) SyncSource(ctx context.Context, sourceID string) (*do
 		cursor = nextCursor
 	}
 
-	// Step 7: Update sync cursor
-	completedAt := time.Now()
-	syncState.Status = domain.SyncStatusCompleted
-	syncState.LastSyncAt = &completedAt
-	syncState.CompletedAt = &completedAt
-	syncState.Cursor = lastCursor
-	syncState.Stats = stats
-	syncState.Error = ""
-
-	if err := o.syncStore.Save(ctx, syncState); err != nil {
-		o.logger.Warn("failed to update sync state", "error", err)
-	}
-
-	duration := time.Since(startTime).Seconds()
-
-	o.logger.Info("sync completed",
-		"source_id", sourceID,
-		"duration_seconds", duration,
+	o.logger.Info("container sync completed",
+		"source_id", source.ID,
+		"container_id", containerID,
 		"documents_added", stats.DocumentsAdded,
 		"documents_updated", stats.DocumentsUpdated,
 		"documents_deleted", stats.DocumentsDeleted,
-		"chunks_indexed", stats.ChunksIndexed,
-		"errors", stats.Errors,
 	)
 
-	return &domain.SyncResult{
-		SourceID: sourceID,
-		Success:  true,
-		Stats:    stats,
-		Duration: duration,
-		Cursor:   lastCursor,
-	}, nil
+	return stats, lastCursor, nil
 }
 
 // SyncAll synchronizes all enabled sources for a team.
@@ -405,4 +485,79 @@ func (o *SyncOrchestrator) failSync(
 		Error:    err.Error(),
 		Duration: duration,
 	}, err
+}
+
+// GetSyncState retrieves the sync state for a source.
+func (o *SyncOrchestrator) GetSyncState(ctx context.Context, sourceID string) (*domain.SyncState, error) {
+	// First verify the source exists
+	_, err := o.sourceStore.Get(ctx, sourceID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get sync state from store
+	state, err := o.syncStore.Get(ctx, sourceID)
+	if err != nil {
+		if err == domain.ErrNotFound {
+			// Return empty state if none exists
+			return &domain.SyncState{
+				SourceID: sourceID,
+				Status:   domain.SyncStatusIdle,
+				Stats:    domain.SyncStats{},
+			}, nil
+		}
+		return nil, err
+	}
+
+	return state, nil
+}
+
+// ListSyncStates retrieves sync states for all sources.
+func (o *SyncOrchestrator) ListSyncStates(ctx context.Context) ([]*domain.SyncState, error) {
+	// Get all sources
+	sources, err := o.sourceStore.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list sources: %w", err)
+	}
+
+	states := make([]*domain.SyncState, 0, len(sources))
+	for _, source := range sources {
+		state, err := o.GetSyncState(ctx, source.ID)
+		if err != nil {
+			o.logger.Warn("failed to get sync state", "source_id", source.ID, "error", err)
+			// Include a placeholder state for sources where we couldn't get state
+			states = append(states, &domain.SyncState{
+				SourceID: source.ID,
+				Status:   domain.SyncStatusIdle,
+				Error:    err.Error(),
+			})
+			continue
+		}
+		states = append(states, state)
+	}
+
+	return states, nil
+}
+
+// CancelSync cancels an ongoing sync for a source.
+// Note: This is a placeholder - actual cancellation requires context propagation.
+func (o *SyncOrchestrator) CancelSync(ctx context.Context, sourceID string) error {
+	// Get current sync state
+	state, err := o.syncStore.Get(ctx, sourceID)
+	if err != nil {
+		return err
+	}
+
+	// Only running syncs can be cancelled
+	if state.Status != domain.SyncStatusRunning {
+		return nil
+	}
+
+	// Mark as failed/cancelled
+	now := time.Now()
+	state.Status = domain.SyncStatusFailed
+	state.CompletedAt = &now
+	state.Error = "cancelled by user"
+
+	return o.syncStore.Save(ctx, state)
 }

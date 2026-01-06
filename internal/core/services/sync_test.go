@@ -65,7 +65,7 @@ func newMockConnectorFactory() *mockConnectorFactory {
 
 func (m *mockConnectorFactory) Register(builder driven.ConnectorBuilder) {}
 
-func (m *mockConnectorFactory) Create(ctx context.Context, source *domain.Source) (driven.Connector, error) {
+func (m *mockConnectorFactory) Create(ctx context.Context, source *domain.Source, containerID string) (driven.Connector, error) {
 	if m.createErr != nil {
 		return nil, m.createErr
 	}
@@ -188,10 +188,8 @@ func TestSyncSource_ConnectorCreateFails(t *testing.T) {
 	// Make connector creation fail
 	connectorFactory.createErr = errors.New("connector creation failed")
 
-	result, err := orchestrator.SyncSource(ctx, "source-1")
-	if err == nil {
-		t.Fatal("expected error when connector creation fails")
-	}
+	result, _ := orchestrator.SyncSource(ctx, "source-1")
+	// With container-scoped sync, errors are captured in result.Error
 	if result.Success {
 		t.Error("expected Success=false")
 	}
@@ -218,10 +216,8 @@ func TestSyncSource_TestConnectionFails(t *testing.T) {
 		return errors.New("connection test failed")
 	}
 
-	result, err := orchestrator.SyncSource(ctx, "source-1")
-	if err == nil {
-		t.Fatal("expected error when connection test fails")
-	}
+	result, _ := orchestrator.SyncSource(ctx, "source-1")
+	// With container-scoped sync, errors are captured in result.Error
 	if result.Success {
 		t.Error("expected Success=false")
 	}
@@ -248,10 +244,8 @@ func TestSyncSource_FetchChangesFails(t *testing.T) {
 		return nil, "", errors.New("fetch changes failed")
 	}
 
-	result, err := orchestrator.SyncSource(ctx, "source-1")
-	if err == nil {
-		t.Fatal("expected error when fetch changes fails")
-	}
+	result, _ := orchestrator.SyncSource(ctx, "source-1")
+	// With container-scoped sync, errors are captured in result.Error
 	if result.Success {
 		t.Error("expected Success=false")
 	}
@@ -288,15 +282,14 @@ func TestSyncSource_ContextCancelled(t *testing.T) {
 		return nil, "", nil
 	}
 
-	result, err := orchestrator.SyncSource(ctx, "source-1")
-	if err == nil {
-		t.Fatal("expected error when context cancelled")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("expected context.Canceled error, got: %v", err)
-	}
+	result, _ := orchestrator.SyncSource(ctx, "source-1")
+	// With container-scoped sync, context cancellation is captured in result.Error
 	if result.Success {
 		t.Error("expected Success=false")
+	}
+	// The error should mention context cancellation
+	if !containsString(result.Error, "context canceled") && !containsString(result.Error, "context cancelled") {
+		t.Errorf("expected error to mention context cancellation, got: %s", result.Error)
 	}
 }
 
@@ -368,8 +361,9 @@ func TestSyncSource_Success_AddDocument(t *testing.T) {
 	}
 
 	// Verify chunks were indexed in search engine
-	if searchEngine.Count() != 1 {
-		t.Errorf("expected 1 chunk in search engine, got %d", searchEngine.Count())
+	count, _ := searchEngine.Count(ctx)
+	if count != 1 {
+		t.Errorf("expected 1 chunk in search engine, got %d", count)
 	}
 
 	// Verify sync state was updated
@@ -521,7 +515,8 @@ func TestSyncSource_Success_DeleteDocument(t *testing.T) {
 	}
 
 	// Verify search engine was updated
-	if searchEngine.Count() != 0 {
+	count, _ := searchEngine.Count(ctx)
+	if count != 0 {
 		t.Error("expected chunks to be deleted from search engine")
 	}
 
@@ -805,8 +800,9 @@ func TestSyncSource_MultipleChunks(t *testing.T) {
 	}
 
 	// Verify chunks were indexed
-	if searchEngine.Count() != 3 {
-		t.Errorf("expected 3 chunks in search engine, got %d", searchEngine.Count())
+	seCount, _ := searchEngine.Count(ctx)
+	if seCount != 3 {
+		t.Errorf("expected 3 chunks in search engine, got %d", seCount)
 	}
 }
 

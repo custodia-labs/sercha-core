@@ -95,6 +95,41 @@ func (m *MockSourceStore) SetEnabled(ctx context.Context, id string, enabled boo
 	return nil
 }
 
+func (m *MockSourceStore) CountByInstallation(ctx context.Context, installationID string) (int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	count := 0
+	for _, source := range m.sources {
+		if source.InstallationID == installationID {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (m *MockSourceStore) ListByInstallation(ctx context.Context, installationID string) ([]*domain.Source, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var result []*domain.Source
+	for _, source := range m.sources {
+		if source.InstallationID == installationID {
+			result = append(result, source)
+		}
+	}
+	return result, nil
+}
+
+func (m *MockSourceStore) UpdateSelection(ctx context.Context, id string, containers []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	source, ok := m.sources[id]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	source.SelectedContainers = containers
+	return nil
+}
+
 // Helper methods for testing
 
 func (m *MockSourceStore) Reset() {

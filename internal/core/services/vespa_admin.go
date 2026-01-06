@@ -16,11 +16,13 @@ var _ driving.VespaAdminService = (*vespaAdminService)(nil)
 
 // vespaAdminService implements the VespaAdminService interface
 type vespaAdminService struct {
-	deployer      driven.VespaDeployer
-	configStore   driven.VespaConfigStore
-	settingsStore driven.SettingsStore
-	services      *runtime.Services
-	teamID        string
+	deployer        driven.VespaDeployer
+	configStore     driven.VespaConfigStore
+	settingsStore   driven.SettingsStore
+	searchEngine    driven.SearchEngine
+	services        *runtime.Services
+	teamID          string
+	defaultEndpoint string
 }
 
 // NewVespaAdminService creates a new VespaAdminService
@@ -28,15 +30,22 @@ func NewVespaAdminService(
 	deployer driven.VespaDeployer,
 	configStore driven.VespaConfigStore,
 	settingsStore driven.SettingsStore,
+	searchEngine driven.SearchEngine,
 	services *runtime.Services,
 	teamID string,
+	defaultEndpoint string,
 ) driving.VespaAdminService {
+	if defaultEndpoint == "" {
+		defaultEndpoint = "http://vespa:19071"
+	}
 	return &vespaAdminService{
-		deployer:      deployer,
-		configStore:   configStore,
-		settingsStore: settingsStore,
-		services:      services,
-		teamID:        teamID,
+		deployer:        deployer,
+		configStore:     configStore,
+		settingsStore:   settingsStore,
+		searchEngine:    searchEngine,
+		services:        services,
+		teamID:          teamID,
+		defaultEndpoint: defaultEndpoint,
 	}
 }
 
@@ -54,7 +63,7 @@ func (s *vespaAdminService) Connect(ctx context.Context, req driving.ConnectVesp
 		endpoint = config.Endpoint
 	}
 	if endpoint == "" {
-		endpoint = "http://vespa:19071"
+		endpoint = s.defaultEndpoint
 	}
 
 	// Health check first
@@ -154,7 +163,7 @@ func (s *vespaAdminService) Status(ctx context.Context) (*driving.VespaStatus, e
 		// Return unconfigured status
 		return &driving.VespaStatus{
 			Connected: false,
-			Endpoint:  "http://vespa:19071",
+			Endpoint:  s.defaultEndpoint,
 			Healthy:   false,
 		}, nil
 	}
@@ -164,6 +173,14 @@ func (s *vespaAdminService) Status(ctx context.Context) (*driving.VespaStatus, e
 	if config.Connected && config.Endpoint != "" {
 		if err := s.deployer.HealthCheck(ctx, config.Endpoint); err == nil {
 			healthy = true
+		}
+	}
+
+	// Get indexed chunk count if healthy and search engine is available
+	var indexedChunks int64
+	if healthy && s.searchEngine != nil {
+		if count, err := s.searchEngine.Count(ctx); err == nil {
+			indexedChunks = count
 		}
 	}
 
@@ -187,6 +204,7 @@ func (s *vespaAdminService) Status(ctx context.Context) (*driving.VespaStatus, e
 		CanUpgrade:        canUpgrade,
 		ReindexRequired:   false,
 		Healthy:           healthy,
+		IndexedChunks:     indexedChunks,
 		ClusterInfo:       config.ClusterInfo,
 	}, nil
 }

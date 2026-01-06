@@ -18,18 +18,6 @@ services:
       timeout: 5s
       retries: 5
 
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
   vespa:
     image: vespaengine/vespa:8
     ports:
@@ -44,14 +32,11 @@ services:
       start_period: 60s
 
   sercha:
-    image: sercha-core:latest
-    build:
-      context: ../..
-      dockerfile: Dockerfile
+    image: ghcr.io/custodia-labs/sercha-core:latest
     environment:
       DATABASE_URL: postgres://sercha:sercha_dev@postgres:5432/sercha?sslmode=disable
-      REDIS_URL: redis://redis:6379
-      VESPA_URL: http://vespa:19071
+      VESPA_CONFIG_URL: http://vespa:19071
+      VESPA_CONTAINER_URL: http://vespa:8080
       JWT_SECRET: change-me-in-production
       PORT: 8080
     ports:
@@ -59,12 +44,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
       vespa:
         condition: service_healthy
 
 volumes:
   postgres_data:
-  redis_data:
   vespa_data:

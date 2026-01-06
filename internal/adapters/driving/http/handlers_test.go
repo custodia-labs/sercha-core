@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/custodia-labs/sercha-core/internal/core/domain"
+	"github.com/custodia-labs/sercha-core/internal/core/ports/driven"
 	"github.com/custodia-labs/sercha-core/internal/core/ports/driving"
 )
 
@@ -184,6 +185,10 @@ func (m *mockSourceService) Disable(ctx context.Context, id string) error {
 	return nil
 }
 
+func (m *mockSourceService) UpdateSelection(ctx context.Context, id string, containers []string) error {
+	return nil
+}
+
 type mockDocumentService struct {
 	getWithChunksFn func(ctx context.Context, id string) (*domain.DocumentWithChunks, error)
 }
@@ -305,12 +310,48 @@ func TestHealthHandler(t *testing.T) {
 		t.Errorf("expected status 200, got %d", rr.Code)
 	}
 
-	var response map[string]string
+	var response HealthResponse
 	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if response["status"] != "ok" {
-		t.Errorf("expected status 'ok', got %s", response["status"])
+	if response.Status != "healthy" {
+		t.Errorf("expected status 'healthy', got %s", response.Status)
+	}
+	if response.Components["server"].Status != "healthy" {
+		t.Errorf("expected server component to be healthy")
+	}
+}
+
+func TestHealthHandler_WithVespaUnhealthy(t *testing.T) {
+	mockVespa := &mockVespaAdminService{
+		healthCheckFn: func(ctx context.Context) error {
+			return errors.New("vespa not connected")
+		},
+	}
+	server := &Server{version: "test", vespaAdminService: mockVespa}
+
+	req := httptest.NewRequest("GET", "/health", nil)
+	rr := httptest.NewRecorder()
+
+	server.handleHealth(rr, req)
+
+	// Always returns 200 - service is up and can respond
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rr.Code)
+	}
+
+	var response HealthResponse
+	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if response.Status != "degraded" {
+		t.Errorf("expected status 'degraded', got %s", response.Status)
+	}
+	if response.Components["vespa"].Status != "unhealthy" {
+		t.Errorf("expected vespa component to be unhealthy")
+	}
+	if response.Components["server"].Status != "healthy" {
+		t.Errorf("expected server component to be healthy")
 	}
 }
 
@@ -1553,11 +1594,89 @@ func TestHandleDeleteSource_InternalError(t *testing.T) {
 	}
 }
 
-func TestHandleTriggerSync_Success(t *testing.T) {
-	server := &Server{}
+// mockTaskQueue implements driven.TaskQueue for testing
+type mockTaskQueue struct {
+	enqueueFn func(ctx context.Context, task *domain.Task) error
+}
 
-	req := httptest.NewRequest("POST", "/api/v1/sync/source-1", nil)
-	req.SetPathValue("sourceId", "source-1")
+func (m *mockTaskQueue) Enqueue(ctx context.Context, task *domain.Task) error {
+	if m.enqueueFn != nil {
+		return m.enqueueFn(ctx, task)
+	}
+	return nil
+}
+
+func (m *mockTaskQueue) EnqueueBatch(ctx context.Context, tasks []*domain.Task) error {
+	return nil
+}
+
+func (m *mockTaskQueue) Dequeue(ctx context.Context) (*domain.Task, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockTaskQueue) DequeueWithTimeout(ctx context.Context, timeout int) (*domain.Task, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockTaskQueue) Ack(ctx context.Context, taskID string) error {
+	return nil
+}
+
+func (m *mockTaskQueue) Nack(ctx context.Context, taskID string, reason string) error {
+	return nil
+}
+
+func (m *mockTaskQueue) GetTask(ctx context.Context, taskID string) (*domain.Task, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockTaskQueue) ListTasks(ctx context.Context, filter driven.TaskFilter) ([]*domain.Task, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockTaskQueue) CancelTask(ctx context.Context, taskID string) error {
+	return nil
+}
+
+func (m *mockTaskQueue) PurgeTasks(ctx context.Context, olderThan int) (int, error) {
+	return 0, nil
+}
+
+func (m *mockTaskQueue) Stats(ctx context.Context) (*driven.QueueStats, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockTaskQueue) Ping(ctx context.Context) error {
+	return nil
+}
+
+func (m *mockTaskQueue) Close() error {
+	return nil
+}
+
+func TestHandleTriggerSync_Success(t *testing.T) {
+	mockSource := &mockSourceService{
+		getFn: func(ctx context.Context, id string) (*domain.Source, error) {
+			return &domain.Source{
+				ID:           id,
+				Name:         "Test Source",
+				ProviderType: domain.ProviderTypeGitHub,
+			}, nil
+		},
+	}
+	mockQueue := &mockTaskQueue{
+		enqueueFn: func(ctx context.Context, task *domain.Task) error {
+			return nil
+		},
+	}
+
+	server := &Server{
+		sourceService: mockSource,
+		taskQueue:     mockQueue,
+	}
+
+	req := httptest.NewRequest("POST", "/api/v1/sources/source-1/sync", nil)
+	req.SetPathValue("id", "source-1")
 	rr := httptest.NewRecorder()
 
 	server.handleTriggerSync(rr, req)
@@ -1578,7 +1697,8 @@ func TestHandleTriggerSync_Success(t *testing.T) {
 func TestHandleTriggerSync_MissingID(t *testing.T) {
 	server := &Server{}
 
-	req := httptest.NewRequest("POST", "/api/v1/sync/", nil)
+	req := httptest.NewRequest("POST", "/api/v1/sources//sync", nil)
+	// No path value set for "id"
 	rr := httptest.NewRecorder()
 
 	server.handleTriggerSync(rr, req)

@@ -137,7 +137,6 @@ func TestSettingsService_Get(t *testing.T) {
 	store := &mockSettingsStore{
 		settings: &domain.Settings{
 			TeamID:         "team-1",
-			AIProvider:     domain.AIProviderOpenAI,
 			ResultsPerPage: 20,
 		},
 	}
@@ -185,9 +184,7 @@ func TestSettingsService_Update_AllFields(t *testing.T) {
 	services := runtime.NewServices(config)
 	svc := NewSettingsService(store, &mockAIFactory{}, services, "team-1")
 
-	aiProvider := domain.AIProviderAnthropic
-	embeddingModel := "text-embedding-3-large"
-	aiEndpoint := "https://api.example.com"
+	// Note: AI configuration (provider, model, endpoint) is now managed via UpdateAISettings
 	searchMode := domain.SearchModeHybrid
 	resultsPerPage := 30
 	syncInterval := 120
@@ -196,9 +193,6 @@ func TestSettingsService_Update_AllFields(t *testing.T) {
 	autoSuggest := true
 
 	req := driving.UpdateSettingsRequest{
-		AIProvider:            &aiProvider,
-		EmbeddingModel:        &embeddingModel,
-		AIEndpoint:            &aiEndpoint,
 		DefaultSearchMode:     &searchMode,
 		ResultsPerPage:        &resultsPerPage,
 		SyncIntervalMinutes:   &syncInterval,
@@ -212,14 +206,14 @@ func TestSettingsService_Update_AllFields(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if settings.AIProvider != domain.AIProviderAnthropic {
-		t.Errorf("expected anthropic provider, got %s", settings.AIProvider)
-	}
-	if settings.EmbeddingModel != "text-embedding-3-large" {
-		t.Errorf("expected text-embedding-3-large, got %s", settings.EmbeddingModel)
-	}
 	if settings.DefaultSearchMode != domain.SearchModeHybrid {
 		t.Errorf("expected hybrid mode, got %s", settings.DefaultSearchMode)
+	}
+	if settings.ResultsPerPage != 30 {
+		t.Errorf("expected 30, got %d", settings.ResultsPerPage)
+	}
+	if settings.SyncIntervalMinutes != 120 {
+		t.Errorf("expected 120, got %d", settings.SyncIntervalMinutes)
 	}
 }
 

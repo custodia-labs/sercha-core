@@ -25,6 +25,9 @@ type SearchEngine interface {
 
 	// HealthCheck verifies the search engine is available
 	HealthCheck(ctx context.Context) error
+
+	// Count returns the total number of indexed chunks
+	Count(ctx context.Context) (int64, error)
 }
 
 // VectorIndex handles vector similarity search

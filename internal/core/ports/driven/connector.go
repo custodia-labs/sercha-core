@@ -34,9 +34,11 @@ type ConnectorBuilder interface {
 	// Type returns the provider type this builder creates.
 	Type() domain.ProviderType
 
-	// Build creates a connector with the given token provider.
+	// Build creates a connector scoped to a specific container.
+	// The containerID comes from source.SelectedContainers (one per sync job).
+	// For providers that don't support container selection, containerID may be empty.
 	// The TokenProvider handles credential retrieval and OAuth token refresh.
-	Build(ctx context.Context, tokenProvider TokenProvider) (Connector, error)
+	Build(ctx context.Context, tokenProvider TokenProvider, containerID string) (Connector, error)
 
 	// SupportsOAuth returns true if this connector uses OAuth authentication.
 	SupportsOAuth() bool
@@ -44,6 +46,11 @@ type ConnectorBuilder interface {
 	// OAuthConfig returns OAuth configuration for this provider.
 	// Returns nil if the provider doesn't support OAuth.
 	OAuthConfig() *OAuthConfig
+
+	// SupportsContainerSelection returns true if this connector supports container picking.
+	// If true, admins can select specific containers (repos, drives, spaces) to index.
+	// If false, the connector indexes all accessible content.
+	SupportsContainerSelection() bool
 }
 
 // OAuthConfig contains OAuth settings for a provider.
@@ -66,9 +73,10 @@ type ConnectorFactory interface {
 	// Register registers a connector builder for a provider type.
 	Register(builder ConnectorBuilder)
 
-	// Create creates a connector for the given source.
-	// It resolves credentials and creates a TokenProvider automatically.
-	Create(ctx context.Context, source *domain.Source) (Connector, error)
+	// Create creates a connector for the given source, scoped to a container.
+	// Called by SyncOrchestrator once per container in source.SelectedContainers.
+	// For providers without container selection, containerID may be empty.
+	Create(ctx context.Context, source *domain.Source, containerID string) (Connector, error)
 
 	// SupportedTypes returns all registered provider types.
 	SupportedTypes() []domain.ProviderType

@@ -201,16 +201,17 @@ func (s *SearchEngine) Search(ctx context.Context, query string, queryEmbedding 
 func (s *SearchEngine) buildYQL(query string, opts domain.SearchOptions) string {
 	var conditions []string
 
-	// Text search condition
+	// Text search condition using content contains for BM25
 	if query != "" {
-		escapedQuery := url.QueryEscape(query)
+		// Escape quotes in query for YQL
+		escapedQuery := strings.ReplaceAll(query, "\"", "\\\"")
 		switch opts.Mode {
 		case domain.SearchModeTextOnly:
-			conditions = append(conditions, fmt.Sprintf("userQuery(\"%s\")", escapedQuery))
+			conditions = append(conditions, fmt.Sprintf("content contains \"%s\"", escapedQuery))
 		case domain.SearchModeSemanticOnly:
 			conditions = append(conditions, "({targetHits:100}nearestNeighbor(embedding,embedding))")
 		default: // Hybrid
-			conditions = append(conditions, fmt.Sprintf("userQuery(\"%s\") or ({targetHits:100}nearestNeighbor(embedding,embedding))", escapedQuery))
+			conditions = append(conditions, fmt.Sprintf("content contains \"%s\" or ({targetHits:100}nearestNeighbor(embedding,embedding))", escapedQuery))
 		}
 	}
 
@@ -336,4 +337,44 @@ func (s *SearchEngine) HealthCheck(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// Count returns the total number of indexed chunks in Vespa
+func (s *SearchEngine) Count(ctx context.Context) (int64, error) {
+	// Use Vespa search with hits=0 to just get the totalCount
+	searchReq := map[string]interface{}{
+		"yql":  "select * from chunk where true",
+		"hits": 0,
+	}
+
+	body, err := json.Marshal(searchReq)
+	if err != nil {
+		return 0, err
+	}
+
+	url := fmt.Sprintf("%s/search/", s.baseURL)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("vespa count query failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("vespa count query failed: %s - %s", resp.Status, string(respBody))
+	}
+
+	var searchResp vespaSearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+		return 0, err
+	}
+
+	return searchResp.Root.Fields.TotalCount, nil
 }
