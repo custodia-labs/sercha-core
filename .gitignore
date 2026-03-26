@@ -53,3 +53,4 @@ dist/
 # They should exist locally but never be pushed to upstream PRs.
 .claude/
 CLAUDE.md
+tasks/
