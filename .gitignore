@@ -47,3 +47,9 @@ __debug_bin*
 # Local development
 tmp/
 dist/
+
+# Fork-only files (tracked on fork's main, never on feature branches)
+# These are Claude Code agent configuration and workflow files.
+# They should exist locally but never be pushed to upstream PRs.
+.claude/
+CLAUDE.md

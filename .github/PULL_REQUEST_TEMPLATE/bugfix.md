@@ -20,9 +20,14 @@
 
 - [ ] Bug no longer reproduces
 - [ ] Regression test added
+- [ ] Integration tests pass (if fix affects multi-service flows)
 - [ ] Manual testing performed
 
-**Test command:** `go test ./...`
+**Test commands:**
+```bash
+go test ./...                    # Unit tests
+cd tests/integration && make test  # Integration tests (if applicable)
+```
 
 ## Checklist
 

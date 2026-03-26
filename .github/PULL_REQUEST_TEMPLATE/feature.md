@@ -15,10 +15,15 @@
 ## Testing
 
 - [ ] Unit tests added/updated
+- [ ] Integration tests pass (if applicable)
 - [ ] Manual testing performed
 - [ ] Tested Docker build
 
-**Test command:** `go test ./...`
+**Test commands:**
+```bash
+go test ./...                    # Unit tests
+cd tests/integration && make test  # Integration tests (if applicable)
+```
 
 ## Checklist
 
